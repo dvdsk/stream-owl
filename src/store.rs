@@ -25,6 +25,7 @@ use self::capacity::Capacity;
 
 #[derive(Debug)]
 pub(crate) struct StoreReader {
+    pub(super) capacity: Capacity,
     pub(crate) curr_store: Arc<Mutex<Store>>,
     curr_range: range_watch::Receiver,
     stream_size: Size,
@@ -68,6 +69,7 @@ pub enum Error {
 fn store_handles(
     store: Store,
     rx: range_watch::Receiver,
+    capacity: Capacity,
     capacity_watcher: CapacityWatcher,
     stream_size: Size,
 ) -> (StoreReader, StoreWriter) {
@@ -77,6 +79,7 @@ fn store_handles(
             curr_range: rx,
             curr_store: curr_store.clone(),
             stream_size: stream_size.clone(),
+            capacity,
         },
         StoreWriter {
             curr_store,
@@ -92,10 +95,11 @@ pub(crate) async fn new_disk_backed(
 ) -> Result<(StoreReader, StoreWriter), disk::OpenError> {
     let (capacity_watcher, capacity) = capacity::new(capacity::Bounds::Unlimited);
     let (tx, rx) = range_watch::channel();
-    let disk = disk::Disk::new(path, capacity, tx).await?;
+    let disk = disk::Disk::new(path, tx).await?;
     Ok(store_handles(
         Store::Disk(disk),
         rx,
+        capacity,
         capacity_watcher,
         stream_size,
     ))
@@ -106,13 +110,15 @@ pub(crate) fn new_limited_mem_backed(
     max_cap: NonZeroUsize,
     stream_size: Size,
 ) -> Result<(StoreReader, StoreWriter), limited_mem::CouldNotAllocate> {
-    let max_cap = NonZeroU64::new(max_cap.get() as u64).expect("already nonzero");
-    let (capacity_watcher, capacity) = capacity::new(CapacityBounds::Limited(max_cap));
+    let capacity_bound = NonZeroU64::new(max_cap.get() as u64).expect("already nonzero");
+    let capacity_bound = CapacityBounds::Limited(capacity_bound);
+    let (capacity_watcher, capacity) = capacity::new(capacity_bound);
     let (tx, rx) = range_watch::channel();
-    let mem = limited_mem::Memory::new(capacity, tx)?;
+    let mem = limited_mem::Memory::new(max_cap, tx)?;
     Ok(store_handles(
         Store::MemLimited(mem),
         rx,
+        capacity,
         capacity_watcher,
         stream_size,
     ))
@@ -122,8 +128,14 @@ pub(crate) fn new_limited_mem_backed(
 pub(crate) fn new_unlimited_mem_backed(stream_size: Size) -> (StoreReader, StoreWriter) {
     let (capacity_watcher, capacity) = capacity::new(CapacityBounds::Unlimited);
     let (tx, rx) = range_watch::channel();
-    let mem = unlimited_mem::Memory::new(capacity, tx);
-    store_handles(Store::MemUnlimited(mem), rx, capacity_watcher, stream_size)
+    let mem = unlimited_mem::Memory::new(tx);
+    store_handles(
+        Store::MemUnlimited(mem),
+        rx,
+        capacity,
+        capacity_watcher,
+        stream_size,
+    )
 }
 
 impl StoreWriter {
@@ -156,7 +168,12 @@ impl StoreReader {
         if let Res::PosBeyondEOF = res {
             Err(ReadError::EndOfStream)
         } else {
-            let n_read = self.curr_store.lock().await.read_at(buf, pos).await?;
+            let n_read = self
+                .curr_store
+                .lock()
+                .await
+                .read_at(buf, pos, Some(&mut self.capacity))
+                .await?;
             Ok(n_read)
         }
     }
@@ -241,7 +258,6 @@ forward_impl!(last_read_pos,; u64);
 forward_impl!(n_supported_ranges,; usize);
 forward_impl_mut!(pub(crate) writer_jump, to_pos: u64;);
 forward_impl_mut!(set_range_tx, tx: range_watch::Sender;);
-forward_impl_mut!(set_capacity, tx: Capacity;);
 
 impl Store {
     pub(crate) async fn write_at(&mut self, buf: &[u8], pos: u64) -> Result<NonZeroUsize, Error> {
@@ -256,15 +272,28 @@ impl Store {
             }),
         }
     }
-    pub(crate) async fn read_at(&mut self, buf: &mut [u8], pos: u64) -> Result<usize, Error> {
+    pub(crate) async fn read_at(
+        &mut self,
+        buf: &mut [u8],
+        pos: u64,
+        max_capacity: Option<&mut Capacity>,
+    ) -> Result<usize, Error> {
         match self {
             Self::Disk(inner) => inner.read_at(buf, pos).await.map_err(Error::Disk),
-            Self::MemLimited(inner) => Ok(inner.read_at(buf, pos)),
+            Self::MemLimited(inner) => {
+                let n_read = inner.read_at(buf, pos);
+                if let Some(capacity) = max_capacity {
+                    if inner.free_capacity > 0 {
+                        capacity.send_available()
+                    }
+                }
+                Ok(n_read)
+            }
             Self::MemUnlimited(inner) => Ok(inner.read_at(buf, pos)),
         }
     }
 
-    fn into_parts(self) -> (range_watch::Sender, Capacity) {
+    fn into_range_watch(self) -> range_watch::Sender {
         match self {
             Self::Disk(inner) => inner.into_parts(),
             Self::MemLimited(inner) => inner.into_parts(),
@@ -272,11 +301,13 @@ impl Store {
         }
     }
 
-    fn capacity(&self) -> &Capacity {
+    fn capacity(&self) -> CapacityBounds {
         match self {
-            Self::Disk(inner) => &inner.capacity,
-            Self::MemLimited(inner) => &inner.capacity,
-            Self::MemUnlimited(inner) => &inner.capacity,
+            Store::Disk(_) => CapacityBounds::Unlimited,
+            Store::MemLimited(inner) => {
+                CapacityBounds::Limited(inner.buffer_cap.try_into().unwrap_or(NonZeroU64::MAX))
+            }
+            Store::MemUnlimited(_) => CapacityBounds::Unlimited,
         }
     }
 }

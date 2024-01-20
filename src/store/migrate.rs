@@ -7,13 +7,14 @@ use futures::FutureExt;
 use futures_concurrency::future::Race;
 use rangemap::set::RangeSet;
 use tokio::runtime::Runtime;
+use tokio::sync::oneshot::error::RecvError;
 use tokio::sync::{oneshot, Mutex};
 use tracing::{instrument, trace};
 
+use super::disk;
 use super::disk::Disk;
 use super::limited_mem::{self, Memory};
-use super::{capacity, range_watch, CapacityBounds, Store, StoreVariant};
-use super::disk;
+use super::{range_watch, Store, StoreVariant};
 use crate::store;
 use crate::store::migrate::range_list::RangeLen;
 
@@ -26,11 +27,11 @@ pub(crate) async fn to_mem(store: Arc<Mutex<Store>>) -> Option<MigrationHandle> 
     }
 
     let (handle, tx) = MigrationHandle::new();
+    let max_cap = todo!();
 
     // is swapped out before migration finishes
     let (watch_placeholder, _) = range_watch::channel();
-    let (_, capacity_placeholder) = capacity::new(CapacityBounds::Unlimited);
-    let mem = match Memory::new(capacity_placeholder, watch_placeholder) {
+    let mem = match Memory::new(max_cap, watch_placeholder) {
         Err(e) => {
             tx.send(Err(MigrationError::MemLimited(e)))
                 .expect("cant have dropped rx");
@@ -54,8 +55,7 @@ pub(crate) async fn to_disk(store: Arc<Mutex<Store>>, path: PathBuf) -> Option<M
 
     // is swapped out before migration finishes
     let (watch_placeholder, _) = range_watch::channel();
-    let (_, capacity_placeholder) = capacity::new(CapacityBounds::Unlimited);
-    let disk = match Disk::new(path, capacity_placeholder, watch_placeholder).await {
+    let disk = match Disk::new(path, watch_placeholder).await {
         Err(e) => {
             tx.send(Err(MigrationError::DiskCreation(e)))
                 .expect("cant have dropped rx");
@@ -82,6 +82,8 @@ pub enum MigrationError {
     MigrateRead(store::Error),
     #[error("Error during migration, failed to write to new store: {0}")]
     MigrateWrite(store::Error),
+    #[error("Migration task panicked, reason unknown :(")]
+    Panic(RecvError),
 }
 
 #[derive(Derivative)]
@@ -97,16 +99,13 @@ impl MigrationHandle {
     }
 
     pub async fn done(self) -> Result<(), MigrationError> {
-        self.0
-            .await
-            .expect("Migration should not crash, therefore never drop the transmit handle")
+        self.0.await.map_err(MigrationError::Panic)?
     }
 
     pub fn block_till_done(self) -> Result<(), MigrationError> {
         let rt =
             Runtime::new().expect("The user needs to create at least one tokio RT to run the stream task on, creating another should therefore succeed");
-        rt.block_on(self.0)
-            .expect("Migration should not crash, therefore never drop the transmit handle")
+        rt.block_on(self.0).map_err(MigrationError::Panic)?
     }
 }
 
@@ -142,9 +141,8 @@ async fn migrate(
         let target_ref = &mut target;
         std::mem::swap(&mut *curr, target_ref);
         let old = target;
-        let (range_watch, capacity) = old.into_parts();
+        let range_watch = old.into_range_watch();
         curr.set_range_tx(range_watch);
-        curr.set_capacity(capacity);
         let _ = tx.send(Ok(()));
     }
 }
@@ -153,10 +151,11 @@ async fn migrate(
 async fn pre_migrate(curr: &Mutex<Store>, target: &mut Store) -> Result<(), MigrationError> {
     let mut buf = Vec::with_capacity(4096);
     let mut on_target = RangeSet::new();
+    let capacity = target.capacity();
     loop {
         let mut src = curr.lock().await;
         let needed_from_src = range_list::ranges_we_can_take(&src, target);
-        let needed_form_src = range_list::correct_for_capacity(needed_from_src, target);
+        let needed_form_src = range_list::correct_for_capacity(needed_from_src, &capacity);
 
         let Some(missing) = missing(&on_target, &needed_form_src) else {
             return Ok(());
@@ -164,7 +163,8 @@ async fn pre_migrate(curr: &Mutex<Store>, target: &mut Store) -> Result<(), Migr
         trace!("copying range missing on target: {missing:?}");
         let len = missing.len().min(4096);
         buf.resize(len as usize, 0u8);
-        src.read_at(&mut buf, missing.start)
+        // TODO this read should not change the src capacity
+        src.read_at(&mut buf, missing.start, None)
             .await
             .map_err(MigrationError::PreMigrateRead)?;
         drop(src);
@@ -189,7 +189,8 @@ async fn finish_migration(curr: &mut Store, target: &mut Store) -> Result<(), Mi
         let len = missing_on_disk.start - missing_on_disk.end;
         let len = len.min(4096);
         buf.resize(len as usize, 0u8);
-        curr.read_at(&mut buf, missing_on_disk.start)
+        // TODO this read should not change the src capacity
+        curr.read_at(&mut buf, missing_on_disk.start, None)
             .await
             .map_err(MigrationError::MigrateRead)?;
 

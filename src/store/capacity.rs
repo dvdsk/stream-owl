@@ -54,46 +54,16 @@ impl CapacityWatcher {
 }
 
 impl Capacity {
-    pub(crate) fn available(&self) -> usize {
-        // cast to smaller unsigned saturates at upper bound
-        if let Bounds::Unlimited = self.max {
-            return usize::MAX;
-        };
-
-        self.free as usize
-    }
-
-    pub(crate) fn total(&self) -> Bounds {
-        self.max
-    }
-
     #[instrument(level = "trace", skip(self), fields(self.free = self.free))]
-    pub(crate) fn add(&mut self, amount: usize) {
-        self.free += amount as u64;
-        if self.available() > 0 {
-            tracing::trace!("store has capacity again");
-            self.can_write.store(true, Ordering::Release);
-            self.write_notify.notify_one()
-        }
-    }
-
-    #[instrument(level = "trace", skip(self), fields(self.free = self.free))]
-    pub(crate) fn remove(&mut self, amount: usize) {
-        self.free = self.free.saturating_sub(amount as u64);
-        if self.available() == 0 {
-            tracing::trace!("store is out of capacity");
-            self.can_write.store(false, Ordering::Release);
-        }
+    pub(crate) fn send_available(&mut self) {
+        tracing::trace!("store has capacity again");
+        self.can_write.store(true, Ordering::Release);
+        self.write_notify.notify_one()
     }
 
     #[instrument(level = "trace", skip(self))]
     pub(crate) fn reset(&mut self) {
-        match self.total() {
-            Bounds::Limited(bytes) => self.free = bytes.get(),
-            Bounds::Unlimited => self.free = u64::MAX ,
-        }
-        self.can_write.store(true, Ordering::Release);
-        self.write_notify.notify_one();
+        self.send_available()
     }
 }
 

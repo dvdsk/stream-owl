@@ -1,3 +1,4 @@
+use std::future::IntoFuture;
 use std::net::SocketAddr;
 use std::ops::Range;
 use std::sync::{Arc, Mutex};
@@ -196,7 +197,7 @@ pub fn pausable_server(
     let listener = tokio::net::TcpListener::from_std(listener).unwrap();
     let port = listener.local_addr().unwrap().port();
     let server = axum::serve(listener, app.layer(TraceLayer::new_for_http()));
-    let server = tokio::task::spawn(server);
+    let server = tokio::task::spawn(server.into_future());
 
     let uri: Uri = format!("http://localhost:{port}/stream_test")
         .parse()

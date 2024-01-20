@@ -15,8 +15,6 @@ use range_store::RangeStore;
 #[derive(Derivative)]
 #[derivative(Debug)]
 pub(crate) struct Memory {
-    /// just kept for migrations, not actually used
-    pub(super) capacity: Capacity,
     #[derivative(Debug = "ignore")]
     buffer: RangeStore,
     /// the range currently being added to
@@ -42,10 +40,9 @@ pub enum Error {
 pub struct CouldNotAllocate(#[from] TryReserveError);
 
 impl Memory {
-    pub(super) fn new(capacity: Capacity, range_tx: range_watch::Sender) -> Self {
+    pub(super) fn new(range_tx: range_watch::Sender) -> Self {
         Self {
             last_read_pos: 0,
-            capacity,
             buffer: RangeStore::new(),
             active_range: 0..0,
             range_tx,
@@ -94,27 +91,20 @@ impl Memory {
         self.range_tx = tx;
     }
 
-    pub(super) fn set_capacity(&mut self, capacity: Capacity) {
-        self.capacity = capacity;
-    }
-
     pub(super) fn last_read_pos(&self) -> u64 {
         self.last_read_pos
     }
     pub(super) fn n_supported_ranges(&self) -> usize {
         usize::MAX
     }
-    pub(super) fn into_parts(self) -> (range_watch::Sender, Capacity) {
-        let Self {
-            capacity, range_tx, ..
-        } = self;
-        (range_tx, capacity)
+    pub(super) fn into_parts(self) -> range_watch::Sender {
+        let Self { range_tx, .. } = self;
+        range_tx
     }
     #[instrument(level = "debug")]
     pub(super) fn writer_jump(&mut self, to_pos: u64) {
         debug_assert!(!self.active_range.contains(&to_pos));
 
-        self.capacity.reset();
         self.active_range = to_pos..to_pos;
         self.range_tx.send(to_pos..to_pos);
         self.last_read_pos = to_pos;

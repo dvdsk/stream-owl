@@ -8,17 +8,15 @@ use rangemap::set::RangeSet;
 
 use crate::vecdeque::VecDequeExt;
 
-use super::capacity::Capacity;
-use super::{range_watch, CapacityBounds};
+use super::range_watch;
 
 #[derive(Derivative)]
 #[derivative(Debug)]
 pub(crate) struct Memory {
-    /// space available because the reader read past data
-    pub(super) capacity: Capacity,
     #[derivative(Debug = "ignore")]
     buffer: VecDeque<u8>,
-    buffer_cap: usize,
+    pub(super) buffer_cap: NonZeroUsize,
+    pub(super) free_capacity: usize,
     /// range of positions available, end non inclusive
     /// positions are measured from the absolute start of the stream
     range: Range<u64>,
@@ -37,24 +35,19 @@ pub struct CouldNotAllocate(#[from] TryReserveError);
 
 impl Memory {
     pub(super) fn new(
-        capacity: Capacity,
+        max_cap: NonZeroUsize,
         range_tx: range_watch::Sender,
     ) -> Result<Self, CouldNotAllocate> {
         let mut buffer = VecDeque::new();
-        let buffer_cap = match capacity.total() {
-            CapacityBounds::Unlimited => 0,
-            CapacityBounds::Limited(bytes) => bytes.get() as usize,
-        };
+        let buffer_cap = max_cap;
 
-        if let CapacityBounds::Limited(bytes) = capacity.total() {
-            buffer.try_reserve_exact(bytes.get() as usize)?;
-        }
+        buffer.try_reserve_exact(max_cap.get())?;
 
         Ok(Self {
             last_read_pos: 0,
-            capacity,
             buffer,
             buffer_cap,
+            free_capacity: max_cap.get(),
             range: 0..0,
             range_tx,
         })
@@ -65,29 +58,29 @@ impl Memory {
 
     /// `pos` must be the position of the first byte in buf in the stream.
     /// For the first write at the start this should be 0
-    #[tracing::instrument(level="trace", skip(buf), fields(buf_len = buf.len()))]
+    #[tracing::instrument(level="trace", skip(data), fields(buf_len = data.len()))]
     pub(super) async fn write_at(
         &mut self,
-        buf: &[u8],
+        data: &[u8],
         pos: u64,
     ) -> Result<NonZeroUsize, SeekInProgress> {
-        assert!(!buf.is_empty());
+        assert!(!data.is_empty());
         if pos != self.range.end {
             debug!("refusing write: position not at current range end, seek must be in progress");
             return Err(SeekInProgress);
         }
 
-        let to_write = buf.len().min(self.capacity.available());
+        let to_write = data.len().min(self.free_capacity);
 
-        let free_in_buffer = self.buffer_cap - self.buffer.len();
+        let free_in_buffer = self.buffer_cap.get() - self.buffer.len();
         let to_remove = to_write.saturating_sub(free_in_buffer);
         self.buffer.drain(..to_remove);
         let removed = to_remove;
 
-        self.buffer.extend(buf[0..to_write].iter());
+        self.buffer.extend(data[0..to_write].iter());
         let written = to_write;
 
-        self.capacity.remove(written);
+        self.free_capacity - written;
         self.range.start += removed as u64;
         self.range.end += written as u64;
         self.range_tx.send(self.range.clone());
@@ -100,7 +93,7 @@ impl Memory {
 
         let relative_pos = pos - self.range.start;
         let n_copied = self.buffer.copy_starting_at(relative_pos as usize, buf);
-        self.capacity.add(n_copied);
+        self.free_capacity + n_copied;
 
         self.last_read_pos = pos;
         n_copied
@@ -120,28 +113,22 @@ impl Memory {
         self.range_tx = tx;
     }
 
-    pub(super) fn set_capacity(&mut self, capacity: Capacity) {
-        self.capacity = capacity;
-    }
-
     pub(super) fn last_read_pos(&self) -> u64 {
         self.last_read_pos
     }
     pub(super) fn n_supported_ranges(&self) -> usize {
         1
     }
-    pub(super) fn into_parts(self) -> (range_watch::Sender, Capacity) {
-        let Self {
-            capacity, range_tx, ..
-        } = self;
-        (range_tx, capacity)
+    pub(super) fn into_parts(self) -> range_watch::Sender {
+        let Self { range_tx, .. } = self;
+        range_tx
     }
     #[instrument(level = "debug")]
     pub(super) fn writer_jump(&mut self, to_pos: u64) {
         debug_assert!(!self.range.contains(&to_pos));
 
         self.buffer.clear();
-        self.capacity.reset();
+        self.free_capacity = self.buffer.capacity();
         self.range = to_pos..to_pos;
         self.range_tx.send(to_pos..to_pos);
         self.last_read_pos = to_pos;

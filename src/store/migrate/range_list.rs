@@ -1,6 +1,9 @@
 use rangemap::set::RangeSet;
 use tracing::instrument;
 
+use crate::store::CapacityBounds;
+use crate::store::capacity::Capacity;
+
 use super::super::Store;
 
 use std::ops::Range;
@@ -44,10 +47,10 @@ impl RangeLen for Range<u64> {
 
 pub(crate) fn correct_for_capacity(
     needed_from_src: Vec<Range<u64>>,
-    target: &mut Store,
+    capacity: &CapacityBounds,
 ) -> RangeSet<u64> {
     use crate::store::CapacityBounds;
-    let CapacityBounds::Limited(capacity) = target.capacity().total() else {
+    let CapacityBounds::Limited(capacity) = capacity else {
         return RangeSet::from_iter(needed_from_src.into_iter());
     };
 
@@ -70,7 +73,7 @@ pub(crate) fn correct_for_capacity(
 /// Get up to the number of ranges supported by the target around the
 /// currently being read range. Prioritizes the currently being read range
 /// and the ranges after it.
-#[instrument(level="trace", skip_all, ret)]
+#[instrument(level = "trace", skip_all, ret)]
 pub(super) fn ranges_we_can_take(src: &Store, target: &Store) -> Vec<Range<u64>> {
     let range_list: Vec<Range<u64>> = src.ranges().iter().cloned().collect();
 

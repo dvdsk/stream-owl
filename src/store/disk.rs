@@ -14,7 +14,6 @@ use crate::store::disk::progress::FlushNeeded;
 
 use self::progress::Progress;
 
-use super::capacity::Capacity;
 use super::range_watch;
 
 mod progress;
@@ -22,10 +21,6 @@ mod progress;
 #[derive(Derivative)]
 #[derivative(Debug)]
 pub(crate) struct Disk {
-    // TODO, refactor: this is just kept here for the next store,
-    // should take it out and keep it somewhere else
-    #[derivative(Debug = "ignore")]
-    pub(super) capacity: Capacity,
     file_pos: u64,
     last_write: u64,
     #[derivative(Debug = "ignore")]
@@ -35,17 +30,17 @@ pub(crate) struct Disk {
 
 #[derive(thiserror::Error, Debug)]
 pub enum Error {
-    #[error("Could not write downloaded data to disk: {0}")]
+    #[error("Could not write downloaded data to disk, os returned: {0}")]
     WritingData(std::io::Error),
-    #[error("Could not read downloaded data from disk: {0}")]
+    #[error("Could not read downloaded data from disk, os returned: {0}")]
     ReadingData(std::io::Error),
     #[error("Could not store download/stream progress to disk: {0}")]
     UpdatingProgress(progress::Error),
-    #[error("Could not seek while preparing write: {0}")]
+    #[error("Could not seek while preparing write, os returned: {0}")]
     SeekForWriting(std::io::Error),
-    #[error("Could not seek while preparing read: {0}")]
+    #[error("Could not seek while preparing read, os returned: {0}")]
     SeekForReading(std::io::Error),
-    #[error("Could not flush data to disk: {0}")]
+    #[error("Could not flush data to disk, os returned: {0}")]
     FlushingData(std::io::Error),
     #[error("Could not flush progress info to disk: {0}")]
     FlushingProgress(progress::Error),
@@ -66,7 +61,6 @@ pub enum OpenError {
 impl Disk {
     pub(super) async fn new(
         path: PathBuf,
-        capacity: Capacity,
         range_tx: range_watch::Sender,
     ) -> Result<Self, OpenError> {
         if path.extension() == Some(OsStr::new("progress")) {
@@ -88,7 +82,6 @@ impl Disk {
             .map_err(OpenError::OpeningProgress)?;
 
         Ok(Self {
-            capacity,
             file_pos: 0,
             last_write: 0,
             file,
@@ -164,17 +157,12 @@ impl Disk {
         usize::MAX
     }
 
-    pub(super) fn set_capacity(&mut self, capacity: Capacity) {
-        self.capacity = capacity;
-    }
-
-    pub(super) fn into_parts(self) -> (range_watch::Sender, Capacity) {
+    pub(super) fn into_parts(self) -> range_watch::Sender {
         let Self {
-            capacity,
             progress: Progress { range_tx, .. },
             ..
         } = self;
-        (range_tx, capacity)
+        range_tx
     }
 
     // OPT: see if we can use this to optimize write at
