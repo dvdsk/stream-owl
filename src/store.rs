@@ -93,7 +93,7 @@ pub(crate) async fn new_disk_backed(
     path: PathBuf,
     stream_size: Size,
 ) -> Result<(StoreReader, StoreWriter), disk::OpenError> {
-    let (capacity_watcher, capacity) = capacity::new(capacity::Bounds::Unlimited);
+    let (capacity_watcher, capacity) = capacity::new();
     let (tx, rx) = range_watch::channel();
     let disk = disk::Disk::new(path, tx).await?;
     Ok(store_handles(
@@ -110,9 +110,7 @@ pub(crate) fn new_limited_mem_backed(
     max_cap: NonZeroUsize,
     stream_size: Size,
 ) -> Result<(StoreReader, StoreWriter), limited_mem::CouldNotAllocate> {
-    let capacity_bound = NonZeroU64::new(max_cap.get() as u64).expect("already nonzero");
-    let capacity_bound = CapacityBounds::Limited(capacity_bound);
-    let (capacity_watcher, capacity) = capacity::new(capacity_bound);
+    let (capacity_watcher, capacity) = capacity::new();
     let (tx, rx) = range_watch::channel();
     let mem = limited_mem::Memory::new(max_cap, tx)?;
     Ok(store_handles(
@@ -126,7 +124,7 @@ pub(crate) fn new_limited_mem_backed(
 
 #[tracing::instrument]
 pub(crate) fn new_unlimited_mem_backed(stream_size: Size) -> (StoreReader, StoreWriter) {
-    let (capacity_watcher, capacity) = capacity::new(CapacityBounds::Unlimited);
+    let (capacity_watcher, capacity) = capacity::new();
     let (tx, rx) = range_watch::channel();
     let mem = unlimited_mem::Memory::new(tx);
     store_handles(

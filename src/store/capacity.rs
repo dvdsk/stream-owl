@@ -21,8 +21,6 @@ pub(crate) enum Bounds {
 #[derive(Derivative)]
 #[derivative(Debug)]
 pub struct Capacity {
-    max: Bounds,
-    free: u64,
     #[derivative(Debug = "ignore")]
     write_notify: Arc<Notify>,
     can_write: Arc<AtomicBool>,
@@ -54,7 +52,7 @@ impl CapacityWatcher {
 }
 
 impl Capacity {
-    #[instrument(level = "trace", skip(self), fields(self.free = self.free))]
+    #[instrument(level = "trace", skip(self))]
     pub(crate) fn send_available(&mut self) {
         tracing::trace!("store has capacity again");
         self.can_write.store(true, Ordering::Release);
@@ -68,7 +66,7 @@ impl Capacity {
 }
 
 #[instrument(level = "debug", ret)]
-pub(crate) fn new(max: Bounds) -> (CapacityWatcher, Capacity) {
+pub(crate) fn new() -> (CapacityWatcher, Capacity) {
     let notify = Arc::new(Notify::new());
     let can_write = Arc::new(AtomicBool::new(true));
     (
@@ -76,19 +74,9 @@ pub(crate) fn new(max: Bounds) -> (CapacityWatcher, Capacity) {
             notify: notify.clone(),
             can_write: can_write.clone(),
         },
-        match max {
-            Bounds::Limited(bytes) => Capacity {
-                max,
-                free: bytes.get(),
-                write_notify: notify,
-                can_write,
-            },
-            Bounds::Unlimited => Capacity {
-                max,
-                free: u64::MAX,
-                write_notify: notify,
-                can_write,
-            },
+        Capacity {
+            write_notify: notify,
+            can_write,
         },
     )
 }
