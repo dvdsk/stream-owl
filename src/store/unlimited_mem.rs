@@ -6,7 +6,6 @@ use tracing::{debug, instrument};
 
 use rangemap::set::RangeSet;
 
-use super::capacity::Capacity;
 use super::range_watch;
 
 mod range_store;

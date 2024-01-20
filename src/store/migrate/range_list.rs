@@ -2,7 +2,6 @@ use rangemap::set::RangeSet;
 use tracing::instrument;
 
 use crate::store::CapacityBounds;
-use crate::store::capacity::Capacity;
 
 use super::super::Store;
 
@@ -49,7 +48,6 @@ pub(crate) fn correct_for_capacity(
     needed_from_src: Vec<Range<u64>>,
     capacity: &CapacityBounds,
 ) -> RangeSet<u64> {
-    use crate::store::CapacityBounds;
     let CapacityBounds::Limited(capacity) = capacity else {
         return RangeSet::from_iter(needed_from_src.into_iter());
     };

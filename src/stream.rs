@@ -1,3 +1,4 @@
+use std::num::NonZeroUsize;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -16,8 +17,8 @@ use crate::{http_client, store};
 mod builder;
 pub use builder::StreamBuilder;
 pub use task::StreamDone;
-mod task;
 mod drop;
+mod task;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -129,7 +130,7 @@ impl ManagedHandle {
     managed_async! {unpause}
     managed_async! {limit_bandwidth bandwidth: Bandwidth}
     managed_async! {remove_bandwidth_limit}
-    managed_async! {use_mem_backend; Option<MigrationHandle>}
+    managed_async! {use_mem_backend max_cap: NonZeroUsize; Option<MigrationHandle>}
     managed_async! {use_disk_backend path: PathBuf; Option<MigrationHandle>}
     managed_async! {flush ; Result<(), Error>}
 
@@ -141,7 +142,7 @@ impl ManagedHandle {
     blocking! {unpause - unpause_blocking}
     blocking! {limit_bandwidth - limit_bandwidth_blocking bandwidth: Bandwidth}
     blocking! {remove_bandwidth_limit - remove_bandwidth_limit_blocking}
-    blocking! {use_mem_backend - use_mem_backend_blocking; Option<MigrationHandle>}
+    blocking! {use_mem_backend - use_mem_backend_blocking max_cap: NonZeroUsize; Option<MigrationHandle>}
     blocking! {use_disk_backend - use_disk_backend_blocking path: PathBuf; Option<MigrationHandle>}
     blocking! {flush - flush_blocking; Result<(), Error>}
 }
@@ -206,8 +207,8 @@ impl Handle {
         todo!()
     }
 
-    pub async fn use_mem_backend(&mut self) -> Option<MigrationHandle> {
-        migrate::to_mem(self.store.clone()).await
+    pub async fn use_mem_backend(&mut self, max_cap: NonZeroUsize) -> Option<MigrationHandle> {
+        migrate::to_mem(self.store.clone(), max_cap).await
     }
 
     pub async fn use_disk_backend(&mut self, path: PathBuf) -> Option<MigrationHandle> {
@@ -231,11 +232,10 @@ impl Handle {
     blocking! {unpause - unpause_blocking}
     blocking! {limit_bandwidth - limit_bandwidth_blocking bandwidth: Bandwidth}
     blocking! {remove_bandwidth_limit - remove_bandwidth_limit_blocking}
-    blocking! {use_mem_backend - use_mem_backend_blocking; Option<MigrationHandle>}
+    blocking! {use_mem_backend - use_mem_backend_blocking max_cap: NonZeroUsize; Option<MigrationHandle>}
     blocking! {use_disk_backend - use_disk_backend_blocking path: PathBuf; Option<MigrationHandle>}
     blocking! {flush - flush_blocking ; Result<(), Error>}
 }
-
 
 #[must_use]
 pub struct StreamEnded {

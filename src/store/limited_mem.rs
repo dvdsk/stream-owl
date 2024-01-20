@@ -80,7 +80,7 @@ impl Memory {
         self.buffer.extend(data[0..to_write].iter());
         let written = to_write;
 
-        self.free_capacity - written;
+        self.free_capacity -= written;
         self.range.start += removed as u64;
         self.range.end += written as u64;
         self.range_tx.send(self.range.clone());
@@ -93,7 +93,7 @@ impl Memory {
 
         let relative_pos = pos - self.range.start;
         let n_copied = self.buffer.copy_starting_at(relative_pos as usize, buf);
-        self.free_capacity + n_copied;
+        self.free_capacity += n_copied;
 
         self.last_read_pos = pos;
         n_copied

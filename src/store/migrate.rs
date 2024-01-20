@@ -1,3 +1,4 @@
+use std::num::NonZeroUsize;
 use std::ops::Range;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -21,13 +22,15 @@ use crate::store::migrate::range_list::RangeLen;
 mod range_list;
 
 #[instrument(skip_all, ret)]
-pub(crate) async fn to_mem(store: Arc<Mutex<Store>>) -> Option<MigrationHandle> {
+pub(crate) async fn to_mem(
+    store: Arc<Mutex<Store>>,
+    max_cap: NonZeroUsize,
+) -> Option<MigrationHandle> {
     if let StoreVariant::MemLimited = store.lock().await.variant().await {
         return None;
     }
 
     let (handle, tx) = MigrationHandle::new();
-    let max_cap = todo!();
 
     // is swapped out before migration finishes
     let (watch_placeholder, _) = range_watch::channel();
