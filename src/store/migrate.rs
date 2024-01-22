@@ -12,18 +12,21 @@ use tokio::sync::oneshot::error::RecvError;
 use tokio::sync::{oneshot, Mutex};
 use tracing::{instrument, trace};
 
+use super::capacity::CapacityWatcher;
 use super::disk;
 use super::disk::Disk;
-use super::limited_mem::{self, Memory};
+use super::limited_mem;
+use super::unlimited_mem;
 use super::{range_watch, Store, StoreVariant};
 use crate::store;
 use crate::store::migrate::range_list::RangeLen;
 
 mod range_list;
 
-#[instrument(skip_all, ret)]
+#[instrument(skip(store, capacity_watch), ret)]
 pub(crate) async fn to_mem(
     store: Arc<Mutex<Store>>,
+    capacity_watch: CapacityWatcher,
     max_cap: NonZeroUsize,
 ) -> Option<MigrationHandle> {
     if let StoreVariant::MemLimited = store.lock().await.variant().await {
@@ -34,7 +37,7 @@ pub(crate) async fn to_mem(
 
     // is swapped out before migration finishes
     let (watch_placeholder, _) = range_watch::channel();
-    let mem = match Memory::new(max_cap, watch_placeholder) {
+    let mem = match limited_mem::Memory::new(max_cap, watch_placeholder) {
         Err(e) => {
             tx.send(Err(MigrationError::MemLimited(e)))
                 .expect("cant have dropped rx");
@@ -42,14 +45,37 @@ pub(crate) async fn to_mem(
         }
         Ok(mem) => mem,
     };
-    let migration = migrate(store.clone(), Store::MemLimited(mem), tx);
+    let migration = migrate(store.clone(), Store::MemLimited(mem), capacity_watch, tx);
 
     tokio::spawn(migration);
     Some(handle)
 }
 
-#[instrument(skip(store), ret)]
-pub(crate) async fn to_disk(store: Arc<Mutex<Store>>, path: PathBuf) -> Option<MigrationHandle> {
+#[instrument(skip(store, capacity_watch), ret)]
+pub(crate) async fn to_unlimited_mem(
+    store: Arc<Mutex<Store>>,
+    capacity_watch: CapacityWatcher,
+) -> Option<MigrationHandle> {
+    if let StoreVariant::MemUnlimited = store.lock().await.variant().await {
+        return None;
+    }
+
+    let (handle, tx) = MigrationHandle::new();
+
+    // is swapped out before migration finishes
+    let (watch_placeholder, _) = range_watch::channel();
+    let mem = unlimited_mem::Memory::new(watch_placeholder);
+    let migration = migrate(store.clone(), Store::MemUnlimited(mem), capacity_watch, tx);
+    tokio::spawn(migration);
+    Some(handle)
+}
+
+#[instrument(skip(store, capacity_watch), ret)]
+pub(crate) async fn to_disk(
+    store: Arc<Mutex<Store>>,
+    capacity_watch: CapacityWatcher,
+    path: PathBuf,
+) -> Option<MigrationHandle> {
     if let StoreVariant::Disk = store.lock().await.variant().await {
         return None;
     }
@@ -66,7 +92,7 @@ pub(crate) async fn to_disk(store: Arc<Mutex<Store>>, path: PathBuf) -> Option<M
         }
         Ok(disk) => disk,
     };
-    let migration = migrate(store.clone(), Store::Disk(disk), tx);
+    let migration = migrate(store.clone(), Store::Disk(disk), capacity_watch, tx);
     tokio::spawn(migration);
     Some(handle)
 }
@@ -116,6 +142,7 @@ impl MigrationHandle {
 async fn migrate(
     curr: Arc<Mutex<Store>>,
     mut target: Store,
+    capacity: CapacityWatcher,
     mut tx: oneshot::Sender<Result<(), MigrationError>>,
 ) {
     enum Res {
@@ -135,6 +162,9 @@ async fn migrate(
         }
     }
 
+    // prevents a writer from getting access for the old store
+    // and then writing in the new store where no space is left
+    let _guard = capacity.start_migration();
     let mut curr = curr.lock().await;
     let res = finish_migration(&mut curr, &mut target).await;
     if res.is_err() {
@@ -144,8 +174,11 @@ async fn migrate(
         let target_ref = &mut target;
         std::mem::swap(&mut *curr, target_ref);
         let old = target;
+
         let range_watch = old.into_range_watch();
         curr.set_range_tx(range_watch);
+        capacity.re_init_from(curr.can_write());
+
         let _ = tx.send(Ok(()));
     }
 }
@@ -173,7 +206,7 @@ async fn pre_migrate(curr: &Mutex<Store>, target: &mut Store) -> Result<(), Migr
         drop(src);
 
         target
-            .write_at(&buf, missing.start)
+            .write_at(&buf, missing.start, None)
             .await
             .map_err(MigrationError::PreMigrateWrite)?;
         on_target.insert(missing);
@@ -198,7 +231,7 @@ async fn finish_migration(curr: &mut Store, target: &mut Store) -> Result<(), Mi
             .map_err(MigrationError::MigrateRead)?;
 
         target
-            .write_at(&buf, missing_on_disk.start)
+            .write_at(&buf, missing_on_disk.start, None)
             .await
             .map_err(MigrationError::MigrateWrite)?;
         on_disk.insert(missing_on_disk);

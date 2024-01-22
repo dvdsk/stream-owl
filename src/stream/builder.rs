@@ -151,6 +151,7 @@ impl StreamBuilder<true> {
             seek_tx,
             is_paused: false,
             store: store_reader.curr_store.clone(),
+            capacity_watch: store_writer.capacity_watcher.clone(),
             store_reader: Arc::new(Mutex::new(store_reader)),
             pause_tx,
             bandwidth_lim_tx,

@@ -17,15 +17,14 @@ mod unlimited_mem;
 pub(crate) use capacity::Bounds as CapacityBounds;
 pub use migrate::MigrationHandle;
 
-use capacity::CapacityWatcher;
+use capacity::CapacityNotifier;
+pub(crate) use capacity::CapacityWatcher;
 
 use crate::http_client::Size;
 
-use self::capacity::Capacity;
-
 #[derive(Debug)]
 pub(crate) struct StoreReader {
-    pub(super) capacity: Capacity,
+    pub(super) capacity: CapacityNotifier,
     pub(crate) curr_store: Arc<Mutex<Store>>,
     curr_range: range_watch::Receiver,
     stream_size: Size,
@@ -34,7 +33,7 @@ pub(crate) struct StoreReader {
 #[derive(Debug, Clone)]
 pub(crate) struct StoreWriter {
     pub(crate) curr_store: Arc<Mutex<Store>>,
-    capacity_watcher: CapacityWatcher,
+    pub(crate) capacity_watcher: CapacityWatcher,
 }
 
 #[derive(Debug)]
@@ -69,7 +68,7 @@ pub enum Error {
 fn store_handles(
     store: Store,
     rx: range_watch::Receiver,
-    capacity: Capacity,
+    capacity: CapacityNotifier,
     capacity_watcher: CapacityWatcher,
     stream_size: Size,
 ) -> (StoreReader, StoreWriter) {
@@ -138,9 +137,13 @@ pub(crate) fn new_unlimited_mem_backed(stream_size: Size) -> (StoreReader, Store
 
 impl StoreWriter {
     #[instrument(level = "trace", skip(self, buf))]
-    pub(crate) async fn write_at(&self, buf: &[u8], pos: u64) -> Result<NonZeroUsize, Error> {
+    pub(crate) async fn write_at(&mut self, buf: &[u8], pos: u64) -> Result<NonZeroUsize, Error> {
         self.capacity_watcher.wait_for_space().await;
-        self.curr_store.lock().await.write_at(buf, pos).await
+        self.curr_store
+            .lock()
+            .await
+            .write_at(buf, pos, Some(&mut self.capacity_watcher))
+            .await
     }
 }
 
@@ -258,12 +261,28 @@ forward_impl_mut!(pub(crate) writer_jump, to_pos: u64;);
 forward_impl_mut!(set_range_tx, tx: range_watch::Sender;);
 
 impl Store {
-    pub(crate) async fn write_at(&mut self, buf: &[u8], pos: u64) -> Result<NonZeroUsize, Error> {
+    /// capacity_watch can be left out when migrating as migration
+    /// will only write upto the capacity of the underlying storage
+    #[instrument(level="debug", skip(buf), err)]
+    pub(crate) async fn write_at(
+        &mut self,
+        buf: &[u8],
+        pos: u64,
+        capacity_watch: Option<&mut CapacityWatcher>,
+    ) -> Result<NonZeroUsize, Error> {
         match self {
             Store::Disk(inner) => inner.write_at(buf, pos).await.map_err(Error::Disk),
-            Store::MemLimited(inner) => inner.write_at(buf, pos).await.map_err(|e| match e {
-                limited_mem::SeekInProgress => Error::SeekInProgress,
-            }),
+            Store::MemLimited(inner) => {
+                let res = inner.write_at(buf, pos).await.map_err(|e| match e {
+                    limited_mem::SeekInProgress => Error::SeekInProgress,
+                });
+                if inner.free_capacity == 0 {
+                    if let Some(capacity_watch) = capacity_watch {
+                        capacity_watch.out_of_capacity();
+                    }
+                }
+                res
+            }
             Store::MemUnlimited(inner) => inner.write_at(buf, pos).await.map_err(|e| match e {
                 unlimited_mem::Error::SeekInProgress => Error::SeekInProgress,
                 unlimited_mem::Error::CouldNotAllocate(e) => Error::MemoryUnlimited(e),
@@ -274,7 +293,7 @@ impl Store {
         &mut self,
         buf: &mut [u8],
         pos: u64,
-        max_capacity: Option<&mut Capacity>,
+        max_capacity: Option<&mut CapacityNotifier>,
     ) -> Result<usize, Error> {
         match self {
             Self::Disk(inner) => inner.read_at(buf, pos).await.map_err(Error::Disk),
@@ -306,6 +325,14 @@ impl Store {
                 CapacityBounds::Limited(inner.buffer_cap.try_into().unwrap_or(NonZeroU64::MAX))
             }
             Store::MemUnlimited(_) => CapacityBounds::Unlimited,
+        }
+    }
+
+    fn can_write(&self) -> bool {
+        match self {
+            Store::Disk(_) => true,
+            Store::MemLimited(inner) => inner.free_capacity > 0,
+            Store::MemUnlimited(_) => true,
         }
     }
 }

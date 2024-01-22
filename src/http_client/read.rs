@@ -72,7 +72,7 @@ impl Reader {
     #[tracing::instrument(level = "trace", skip(target, self))]
     pub(crate) async fn stream_to_writer(
         &mut self,
-        target: &StreamTarget,
+        target: &mut StreamTarget,
         max: Option<usize>,
     ) -> Result<(), Error> {
         if let Reader::PartialData { range, .. } = self {
@@ -96,7 +96,7 @@ impl InnerReader {
     #[tracing::instrument(level = "trace", skip_all)]
     pub(crate) async fn stream_to_writer(
         &mut self,
-        output: &StreamTarget,
+        output: &mut StreamTarget,
         max: Option<usize>,
     ) -> Result<(), Error> {
         let max = max.unwrap_or(usize::MAX);
@@ -131,7 +131,7 @@ impl InnerReader {
     async fn write_from_buffer(
         &mut self,
         max: usize,
-        output: &StreamTarget,
+        output: &mut StreamTarget,
     ) -> Result<usize, Error> {
         let to_take = self.buffer.len().min(max);
         let from_buffer: Vec<_> = self.buffer.range(0..to_take).copied().collect();

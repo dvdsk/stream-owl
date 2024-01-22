@@ -38,7 +38,7 @@ pub(crate) async fn new(
 ) -> Result<StreamDone, Error> {
     let start_pos = 0;
     let chunk_size = 1_000;
-    let target = StreamTarget::new(storage, start_pos, chunk_size);
+    let mut target = StreamTarget::new(storage, start_pos, chunk_size);
 
     let mut client = loop {
         let receive_seek = seek_rx.recv().map(Res1::Seek);
@@ -63,7 +63,7 @@ pub(crate) async fn new(
     loop {
         let client_without_range = match client {
             StreamingClient::RangesSupported(client) => {
-                let res = stream_range(client, &target, &mut seek_rx).await;
+                let res = stream_range(client, &mut target, &mut seek_rx).await;
                 match res {
                     StreamRes::Done => return Ok(StreamDone::DownloadedAll),
                     StreamRes::Canceld => return Ok(StreamDone::Canceld),
@@ -75,9 +75,9 @@ pub(crate) async fn new(
         };
 
         let builder = client_without_range.builder();
-        let receive_seek = receive_actionable_seek(&mut seek_rx, &target).map(Res2::Seek);
+        let receive_seek = seek_rx.recv().map(Res2::Seek);
         let mut reader = client_without_range.into_reader();
-        let write = reader.stream_to_writer(&target, None).map(Res2::Write);
+        let write = reader.stream_to_writer(&mut target, None).map(Res2::Write);
 
         let pos = match (write, receive_seek).race().await {
             Res2::Seek(Some(relevant_pos)) => relevant_pos,
@@ -102,20 +102,6 @@ pub(crate) async fn new(
     }
 }
 
-async fn receive_actionable_seek(
-    seek_rx: &mut mpsc::Receiver<u64>,
-    target: &StreamTarget,
-) -> Option<u64> {
-    loop {
-        // TODO: remove if panic does not trigger <dvdsk noreply@davidsk.dev>
-        let pos = seek_rx.recv().await?;
-        if pos < target.pos() {
-            panic!("thought this was not needed, ooeps");
-            return Some(pos);
-        }
-    }
-}
-
 #[derive(Debug)]
 enum StreamRes {
     Done,
@@ -127,7 +113,7 @@ enum StreamRes {
 #[instrument(level = "debug", skip(client, target, seek_rx), ret)]
 async fn stream_range(
     mut client: RangeSupported,
-    target: &StreamTarget,
+    target: &mut StreamTarget,
     seek_rx: &mut mpsc::Receiver<u64>,
 ) -> StreamRes {
     loop {
@@ -168,7 +154,7 @@ async fn stream_range(
 #[instrument(level = "debug", skip_all, ret)]
 async fn handle_partial_stream(
     client: RangeSupported,
-    target: &StreamTarget,
+    target: &mut StreamTarget,
 ) -> Result<Option<StreamingClient>, Error> {
     let mut reader = client.into_reader();
     let max_to_stream = target.chunk_size as usize;

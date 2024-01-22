@@ -96,7 +96,7 @@ impl StreamTarget {
 
 impl StreamTarget {
     #[instrument(level = "trace", skip(self, buf), fields(buf_len = buf.len()))]
-    pub(crate) async fn append(&self, buf: &[u8]) -> Result<usize, std::io::Error> {
+    pub(crate) async fn append(&mut self, buf: &[u8]) -> Result<usize, std::io::Error> {
         // only this function modifies pos,
         // only need to read threads own writes => relaxed ordering
         let written = self
