@@ -99,23 +99,27 @@ impl StreamTarget {
     pub(crate) async fn append(&mut self, buf: &[u8]) -> Result<usize, std::io::Error> {
         // only this function modifies pos,
         // only need to read threads own writes => relaxed ordering
-        let written = self
-            .store
-            .write_at(buf, self.pos.load(Ordering::Relaxed))
-            .await;
+        let mut written = 0;
 
-        let written = match written {
-            Ok(bytes) => bytes.get(),
-            Err(store::Error::SeekInProgress) => {
-                // this future will be canceld very soon, so just wait here
-                loop {
-                    futures::pending!();
+        while written < buf.len() {
+            let res = self
+                .store
+                .write_at(buf, self.pos.load(Ordering::Relaxed))
+                .await;
+
+            written += match res {
+                Ok(bytes) => bytes.get(),
+                Err(store::Error::SeekInProgress) => {
+                    // this future will be canceld very soon, so just wait here
+                    loop {
+                        futures::pending!();
+                    }
                 }
-            }
-            Err(other) => {
-                todo!("handle other error: {other:?}")
-            }
-        };
+                Err(other) => {
+                    todo!("handle other error: {other:?}")
+                }
+            };
+        }
 
         self.increase_pos(written);
         Ok(written)

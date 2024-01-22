@@ -137,8 +137,12 @@ pub(crate) fn new_unlimited_mem_backed(stream_size: Size) -> (StoreReader, Store
 
 impl StoreWriter {
     #[instrument(level = "trace", skip(self, buf))]
+    /// can rarely return zero bytes
     pub(crate) async fn write_at(&mut self, buf: &[u8], pos: u64) -> Result<NonZeroUsize, Error> {
         self.capacity_watcher.wait_for_space().await;
+        // if a migration happens while we are here then we could get 
+        // into store::write_at, without it having free capacity.
+        // In that case write_at will return zero (which is fine)
         self.curr_store
             .lock()
             .await

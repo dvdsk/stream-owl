@@ -26,23 +26,6 @@ pub(crate) struct CapacityWatcher {
     has_free_capacity: Arc<AtomicBool>,
     #[derivative(Debug = "ignore")]
     new_free_capacity: Arc<Notify>,
-
-    migrating: Arc<AtomicBool>,
-    #[derivative(Debug = "ignore")]
-    migration_done: Arc<Notify>,
-}
-
-/// Ends the migrating lock once it is dropped 
-pub(crate) struct MigrateLock<'a> {
-    migrating: &'a AtomicBool,
-    migration_done: &'a Notify,
-}
-
-impl<'a> Drop for MigrateLock<'a> {
-    fn drop(&mut self) {
-        self.migrating.store(false, Ordering::Release);
-        self.migration_done.notify_waiters();
-    }
 }
 
 impl CapacityWatcher {
@@ -51,12 +34,6 @@ impl CapacityWatcher {
     /// with sequential access
     #[tracing::instrument(level = "trace", skip_all)]
     pub(crate) async fn wait_for_space(&self) {
-        let migration_done = self.migration_done.notified();
-        if self.migrating.load(Ordering::Acquire) {
-            tracing::debug!("waiting for migration to complete");
-            migration_done.await;
-        }
-
         let new_free_capacity = self.new_free_capacity.notified();
         if self.has_free_capacity.load(Ordering::Acquire) {
             return;
@@ -65,18 +42,6 @@ impl CapacityWatcher {
         tracing::trace!("waiting for space");
         // if we get notified then space got freed up
         new_free_capacity.await;
-    }
-
-    /// used in migrations
-    /// called to stop writers passing wait_for_space
-    /// prevents a writer from getting access for the old store
-    /// and then writing in the new store where no space is left
-    pub(crate) fn start_migration<'a>(&'a self) -> MigrateLock<'a> {
-        self.migrating.store(true, Ordering::Release);
-        MigrateLock {
-            migrating: &self.migrating,
-            migration_done: &self.migration_done,
-        }
     }
 
     pub(crate) fn re_init_from(&self, can_write: bool) {
@@ -109,8 +74,6 @@ pub(crate) fn new() -> (CapacityWatcher, CapacityNotifier) {
     let cap_watch = CapacityWatcher {
         new_free_capacity: Arc::new(Notify::new()),
         has_free_capacity: Arc::new(AtomicBool::new(true)),
-        migrating: Arc::new(AtomicBool::new(false)),
-        migration_done: Arc::new(Notify::new()),
     };
     (cap_watch.clone(), cap_watch)
 }

@@ -162,9 +162,6 @@ async fn migrate(
         }
     }
 
-    // prevents a writer from getting access for the old store
-    // and then writing in the new store where no space is left
-    let _guard = capacity.start_migration();
     let mut curr = curr.lock().await;
     let res = finish_migration(&mut curr, &mut target).await;
     if res.is_err() {
