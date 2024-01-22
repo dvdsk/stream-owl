@@ -36,7 +36,6 @@ impl VecDequeExt for VecDeque<u8> {
     }
 }
 
-#[macro_export]
 macro_rules! vecd {
     [] => {
         compile_error!("Use Vecdeque::new()");
@@ -68,6 +67,7 @@ macro_rules! vecd {
         }
     };
 }
+pub(crate) use vecd;
 
 #[cfg(test)]
 mod tests {

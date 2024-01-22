@@ -8,8 +8,7 @@ use tracing::instrument;
 use crate::reader::handle_read_error;
 use crate::store::ReadError;
 use crate::store::StoreReader;
-use crate::vecd;
-use crate::vecdeque::VecDequeExt;
+use crate::vecdeque::{VecDequeExt, vecd};
 
 #[derive(Derivative, Clone)]
 #[derivative(Debug)]

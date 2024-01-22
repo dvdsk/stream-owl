@@ -16,7 +16,7 @@ use self::progress::Progress;
 
 use super::range_watch;
 
-mod progress;
+pub mod progress;
 
 #[derive(Derivative)]
 #[derivative(Debug)]

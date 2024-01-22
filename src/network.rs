@@ -77,7 +77,7 @@ impl Bandwidth {
         ))
     }
 
-    pub fn practically_infinite() -> Self {
+    pub(crate) fn practically_infinite() -> Self {
         Self(NonZeroU32::MAX)
     }
 

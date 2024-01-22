@@ -7,12 +7,13 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 use tracing::instrument;
 
+pub mod disk;
+pub mod limited_mem;
+pub mod migrate;
+pub mod unlimited_mem;
+
 mod capacity;
-mod disk;
-mod limited_mem;
-pub(crate) mod migrate;
 pub(crate) mod range_watch;
-mod unlimited_mem;
 
 pub(crate) use capacity::Bounds as CapacityBounds;
 
@@ -139,7 +140,7 @@ impl StoreWriter {
     /// can rarely return zero bytes
     pub(crate) async fn write_at(&mut self, buf: &[u8], pos: u64) -> Result<NonZeroUsize, Error> {
         self.capacity_watcher.wait_for_space().await;
-        // if a migration happens while we are here then we could get 
+        // if a migration happens while we are here then we could get
         // into store::write_at, without it having free capacity.
         // In that case write_at will return zero (which is fine)
         self.curr_store
@@ -266,7 +267,7 @@ forward_impl_mut!(set_range_tx, tx: range_watch::Sender;);
 impl Store {
     /// capacity_watch can be left out when migrating as migration
     /// will only write upto the capacity of the underlying storage
-    #[instrument(level="debug", skip(buf), err)]
+    #[instrument(level = "debug", skip(buf), err)]
     pub(crate) async fn write_at(
         &mut self,
         buf: &[u8],
