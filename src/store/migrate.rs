@@ -3,13 +3,9 @@ use std::ops::Range;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use derivative::Derivative;
-use futures::FutureExt;
-use futures_concurrency::future::Race;
 use rangemap::set::RangeSet;
-use tokio::runtime::Runtime;
 use tokio::sync::oneshot::error::RecvError;
-use tokio::sync::{oneshot, Mutex};
+use tokio::sync::Mutex;
 use tracing::{instrument, trace};
 
 use super::capacity::CapacityWatcher;
@@ -28,46 +24,31 @@ pub(crate) async fn to_mem(
     store: Arc<Mutex<Store>>,
     capacity_watch: CapacityWatcher,
     max_cap: NonZeroUsize,
-) -> Option<MigrationHandle> {
+) -> Result<(), MigrationError> {
     if let StoreVariant::MemLimited = store.lock().await.variant().await {
-        return None;
+        return Ok(());
     }
-
-    let (handle, tx) = MigrationHandle::new();
 
     // is swapped out before migration finishes
     let (watch_placeholder, _) = range_watch::channel();
-    let mem = match limited_mem::Memory::new(max_cap, watch_placeholder) {
-        Err(e) => {
-            tx.send(Err(MigrationError::MemLimited(e)))
-                .expect("cant have dropped rx");
-            return Some(handle);
-        }
-        Ok(mem) => mem,
-    };
-    let migration = migrate(store.clone(), Store::MemLimited(mem), capacity_watch, tx);
+    let mem = limited_mem::Memory::new(max_cap, watch_placeholder)?;
 
-    tokio::spawn(migration);
-    Some(handle)
+    migrate(store.clone(), Store::MemLimited(mem), capacity_watch).await
 }
 
 #[instrument(skip(store, capacity_watch), ret)]
 pub(crate) async fn to_unlimited_mem(
     store: Arc<Mutex<Store>>,
     capacity_watch: CapacityWatcher,
-) -> Option<MigrationHandle> {
+) -> Result<(), MigrationError> {
     if let StoreVariant::MemUnlimited = store.lock().await.variant().await {
-        return None;
+        return Ok(());
     }
-
-    let (handle, tx) = MigrationHandle::new();
 
     // is swapped out before migration finishes
     let (watch_placeholder, _) = range_watch::channel();
     let mem = unlimited_mem::Memory::new(watch_placeholder);
-    let migration = migrate(store.clone(), Store::MemUnlimited(mem), capacity_watch, tx);
-    tokio::spawn(migration);
-    Some(handle)
+    migrate(store.clone(), Store::MemUnlimited(mem), capacity_watch).await
 }
 
 #[instrument(skip(store, capacity_watch), ret)]
@@ -75,34 +56,23 @@ pub(crate) async fn to_disk(
     store: Arc<Mutex<Store>>,
     capacity_watch: CapacityWatcher,
     path: PathBuf,
-) -> Option<MigrationHandle> {
+) -> Result<(), MigrationError> {
     if let StoreVariant::Disk = store.lock().await.variant().await {
-        return None;
+        return Ok(());
     }
-
-    let (handle, tx) = MigrationHandle::new();
 
     // is swapped out before migration finishes
     let (watch_placeholder, _) = range_watch::channel();
-    let disk = match Disk::new(path, watch_placeholder).await {
-        Err(e) => {
-            tx.send(Err(MigrationError::DiskCreation(e)))
-                .expect("cant have dropped rx");
-            return Some(handle);
-        }
-        Ok(disk) => disk,
-    };
-    let migration = migrate(store.clone(), Store::Disk(disk), capacity_watch, tx);
-    tokio::spawn(migration);
-    Some(handle)
+    let disk = Disk::new(path, watch_placeholder).await?;
+    migrate(store.clone(), Store::Disk(disk), capacity_watch).await
 }
 
 #[derive(thiserror::Error, Debug)]
 pub enum MigrationError {
     #[error("Can not start migration, failed to create disk store: {0}")]
-    DiskCreation(disk::OpenError),
+    DiskCreation(#[from] disk::OpenError),
     #[error("Can not start migration, failed to create limited memory store: {0}")]
-    MemLimited(limited_mem::CouldNotAllocate),
+    MemLimited(#[from] limited_mem::CouldNotAllocate),
     #[error("Error during pre-migration, failed to read from current store: {0}")]
     PreMigrateRead(store::Error),
     #[error("Error during pre-migration, failed to write to new store: {0}")]
@@ -115,69 +85,25 @@ pub enum MigrationError {
     Panic(RecvError),
 }
 
-#[derive(Derivative)]
-#[derivative(Debug)]
-pub struct MigrationHandle(
-    #[derivative(Debug = "ignore")] oneshot::Receiver<Result<(), MigrationError>>,
-);
-
-impl MigrationHandle {
-    fn new() -> (Self, oneshot::Sender<Result<(), MigrationError>>) {
-        let (tx, rx) = oneshot::channel();
-        (Self(rx), tx)
-    }
-
-    pub async fn done(self) -> Result<(), MigrationError> {
-        self.0.await.map_err(MigrationError::Panic)?
-    }
-
-    pub fn block_till_done(self) -> Result<(), MigrationError> {
-        let rt =
-            Runtime::new().expect("The user needs to create at least one tokio RT to run the stream task on, creating another should therefore succeed");
-        rt.block_on(self.0).map_err(MigrationError::Panic)?
-    }
-}
-
 #[instrument(skip_all, ret)]
 async fn migrate(
     curr: Arc<Mutex<Store>>,
     mut target: Store,
     capacity: CapacityWatcher,
-    mut tx: oneshot::Sender<Result<(), MigrationError>>,
-) {
-    enum Res {
-        Cancelled,
-        PreMigration(Result<(), MigrationError>),
-    }
-
-    let pre_migration = pre_migrate(&curr, &mut target).map(Res::PreMigration);
-    let cancelled = tx.closed().map(|_| Res::Cancelled);
-    match (pre_migration, cancelled).race().await {
-        Res::Cancelled => return,
-        Res::PreMigration(Ok(_)) => (),
-        Res::PreMigration(res @ Err(_)) => {
-            // error is irrelevant if migration is canceld
-            let _ = tx.send(res);
-            return;
-        }
-    }
-
+) -> Result<(), MigrationError> {
+    pre_migrate(&curr, &mut target).await?;
     let mut curr = curr.lock().await;
-    let res = finish_migration(&mut curr, &mut target).await;
-    if res.is_err() {
-        // error is irrelevant if migration is canceld
-        let _ = tx.send(res);
-    } else {
-        let target_ref = &mut target;
-        std::mem::swap(&mut *curr, target_ref);
-        let old = target;
+    finish_migration(&mut curr, &mut target).await?;
 
-        let range_watch = old.into_range_watch();
-        curr.set_range_tx(range_watch);
-        capacity.re_init_from(curr.can_write());
+    let target_ref = &mut target;
+    std::mem::swap(&mut *curr, target_ref);
+    let old = target;
 
-        let _ = tx.send(Ok(()));
-    }
+    let range_watch = old.into_range_watch();
+    curr.set_range_tx(range_watch);
+    capacity.re_init_from(curr.can_write());
+
+    Ok(())
 }
 
 #[instrument(skip_all, ret, err)]
@@ -219,8 +145,7 @@ async fn finish_migration(curr: &mut Store, target: &mut Store) -> Result<(), Mi
         let Some(missing_on_disk) = missing(&on_disk, &in_mem) else {
             return Ok(());
         };
-        let len = missing_on_disk.start - missing_on_disk.end;
-        let len = len.min(4096);
+        let len = missing_on_disk.len().min(4096);
         buf.resize(len as usize, 0u8);
         // TODO this read should not change the src capacity
         curr.read_at(&mut buf, missing_on_disk.start, None)

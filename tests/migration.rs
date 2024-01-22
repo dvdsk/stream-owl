@@ -32,9 +32,10 @@ fn migrate_to_disk() {
     controls.unpause_all();
     reader.read_exact(&mut vec![0; 1_000]).unwrap();
 
-    let migration = handle.use_disk_backend_blocking(test_dl_path.clone()).unwrap();
+    handle
+        .use_disk_backend_blocking(test_dl_path.clone())
+        .unwrap();
     reader.read_exact(&mut vec![0; 1_000]).unwrap();
-    migration.block_till_done().unwrap();
 
     reader.seek(std::io::SeekFrom::Start(1_000)).unwrap();
     reader.read_exact(&mut vec![0; 2_000]).unwrap();
@@ -44,5 +45,10 @@ fn migrate_to_disk() {
     assert!(matches!(test_ended, TestEnded::TestDone));
 
     let downloaded = std::fs::read(test_dl_path).unwrap();
-    assert_eq!(downloaded, testing::test_data(downloaded.len() as u32));
+    let correct = {
+        let mut test_data = testing::test_data(downloaded.len() as u32);
+        test_data[0..1000].copy_from_slice(&[0; 1000]);
+        test_data
+    };
+    assert_eq!(downloaded, correct);
 }

@@ -7,7 +7,7 @@ use derivative::Derivative;
 use rangemap::RangeSet;
 use tokio::fs;
 use tokio::fs::File;
-use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt, BufStream};
+use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 use tracing::{debug, instrument};
 
 use crate::store::disk::progress::FlushNeeded;
@@ -24,7 +24,7 @@ pub(crate) struct Disk {
     file_pos: u64,
     last_write: u64,
     #[derivative(Debug = "ignore")]
-    file: BufStream<File>,
+    file: File,
     progress: Progress,
 }
 
@@ -75,7 +75,6 @@ impl Disk {
             .open(&path)
             .await
             .map_err(OpenError::OpenForWriting)?;
-        let file = BufStream::new(file);
 
         let progress = Progress::new(path, range_tx, 0)
             .await

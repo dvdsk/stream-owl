@@ -11,7 +11,8 @@ use tracing::{info, instrument};
 use crate::manager::Command;
 use crate::network::{Bandwidth, BandwidthAllowed, BandwidthTx};
 use crate::reader::{CouldNotCreateRuntime, Reader};
-use crate::store::{migrate, CapacityWatcher, MigrationHandle, Store, StoreReader};
+use crate::store::migrate::MigrationError;
+use crate::store::{migrate, CapacityWatcher, Store, StoreReader};
 use crate::{http_client, store};
 
 mod builder;
@@ -133,9 +134,9 @@ impl ManagedHandle {
     managed_async! {unpause}
     managed_async! {limit_bandwidth bandwidth: Bandwidth}
     managed_async! {remove_bandwidth_limit}
-    managed_async! {use_limited_mem_backend max_cap: NonZeroUsize; Option<MigrationHandle>}
-    managed_async! {use_unlimited_mem_backend ; Option<MigrationHandle>}
-    managed_async! {use_disk_backend path: PathBuf; Option<MigrationHandle>}
+    managed_async! {use_limited_mem_backend max_cap: NonZeroUsize; Result<(), MigrationError>}
+    managed_async! {use_unlimited_mem_backend ; Result<(), MigrationError>}
+    managed_async! {use_disk_backend path: PathBuf; Result<(), MigrationError>}
     managed_async! {flush ; Result<(), Error>}
 
     managed! {try_get_reader; Result<crate::reader::Reader, GetReaderError>}
@@ -146,9 +147,9 @@ impl ManagedHandle {
     blocking! {unpause - unpause_blocking}
     blocking! {limit_bandwidth - limit_bandwidth_blocking bandwidth: Bandwidth}
     blocking! {remove_bandwidth_limit - remove_bandwidth_limit_blocking}
-    blocking! {use_limited_mem_backend - use_mem_backend_blocking max_cap: NonZeroUsize; Option<MigrationHandle>}
-    blocking! {use_unlimited_mem_backend - use_unlimited_mem_backend_blocking ; Option<MigrationHandle>}
-    blocking! {use_disk_backend - use_disk_backend_blocking path: PathBuf; Option<MigrationHandle>}
+    blocking! {use_limited_mem_backend - use_mem_backend_blocking max_cap: NonZeroUsize; Result<(), MigrationError>}
+    blocking! {use_unlimited_mem_backend - use_unlimited_mem_backend_blocking ; Result<(), MigrationError>}
+    blocking! {use_disk_backend - use_disk_backend_blocking path: PathBuf; Result<(), MigrationError>}
     blocking! {flush - flush_blocking; Result<(), Error>}
 }
 
@@ -215,15 +216,15 @@ impl Handle {
     pub async fn use_limited_mem_backend(
         &mut self,
         max_cap: NonZeroUsize,
-    ) -> Option<MigrationHandle> {
+    ) -> Result<(), MigrationError> {
         migrate::to_mem(self.store.clone(), self.capacity_watch.clone(), max_cap).await
     }
 
-    pub async fn use_unlimited_mem_backend(&mut self) -> Option<MigrationHandle> {
+    pub async fn use_unlimited_mem_backend(&mut self) -> Result<(), MigrationError> {
         migrate::to_unlimited_mem(self.store.clone(), self.capacity_watch.clone()).await
     }
 
-    pub async fn use_disk_backend(&mut self, path: PathBuf) -> Option<MigrationHandle> {
+    pub async fn use_disk_backend(&mut self, path: PathBuf) -> Result<(), MigrationError> {
         migrate::to_disk(self.store.clone(), self.capacity_watch.clone(), path).await
     }
 
@@ -244,8 +245,8 @@ impl Handle {
     blocking! {unpause - unpause_blocking}
     blocking! {limit_bandwidth - limit_bandwidth_blocking bandwidth: Bandwidth}
     blocking! {remove_bandwidth_limit - remove_bandwidth_limit_blocking}
-    blocking! {use_limited_mem_backend - use_mem_backend_blocking max_cap: NonZeroUsize; Option<MigrationHandle>}
-    blocking! {use_disk_backend - use_disk_backend_blocking path: PathBuf; Option<MigrationHandle>}
+    blocking! {use_limited_mem_backend - use_mem_backend_blocking max_cap: NonZeroUsize; Result<(), MigrationError>}
+    blocking! {use_disk_backend - use_disk_backend_blocking path: PathBuf; Result<(), MigrationError>}
     blocking! {flush - flush_blocking ; Result<(), Error>}
 }
 

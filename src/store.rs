@@ -15,7 +15,6 @@ pub(crate) mod range_watch;
 mod unlimited_mem;
 
 pub(crate) use capacity::Bounds as CapacityBounds;
-pub use migrate::MigrationHandle;
 
 use capacity::CapacityNotifier;
 pub(crate) use capacity::CapacityWatcher;
