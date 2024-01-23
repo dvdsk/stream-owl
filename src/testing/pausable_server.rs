@@ -1,4 +1,4 @@
-use std::future::IntoFuture;
+use std::io;
 use std::net::SocketAddr;
 use std::ops::Range;
 use std::sync::{Arc, Mutex};
@@ -9,8 +9,10 @@ use axum::response::Response;
 use axum::routing::get;
 use axum::Router;
 use http::{StatusCode, Uri};
+use hyper::body::Incoming;
 use tokio::sync::Notify;
 use tokio::task::JoinHandle;
+use tower::Service;
 use tower_http::trace::TraceLayer;
 use tracing::instrument;
 
@@ -186,7 +188,8 @@ pub fn pausable_server(
 
     let app = Router::new()
         .route("/stream_test", get(handler))
-        .with_state(Arc::clone(&shared_state));
+        .with_state(Arc::clone(&shared_state))
+        .layer(TraceLayer::new_for_http());
 
     let addr = SocketAddr::from(([127, 0, 0, 1], 0));
     // fn this can not be async since then we can not pass this function
@@ -196,8 +199,8 @@ pub fn pausable_server(
     listener.set_nonblocking(true).unwrap();
     let listener = tokio::net::TcpListener::from_std(listener).unwrap();
     let port = listener.local_addr().unwrap().port();
-    let server = axum::serve(listener, app.layer(TraceLayer::new_for_http()));
-    let server = tokio::task::spawn(server.into_future());
+    let server = sever_loop(app, listener);
+    let server = tokio::task::spawn(server);
 
     let uri: Uri = format!("http://localhost:{port}/stream_test")
         .parse()
@@ -205,4 +208,26 @@ pub fn pausable_server(
 
     tracing::debug!("testserver listening on on {}", uri);
     (uri, server)
+}
+
+async fn sever_loop(app: Router, listener: tokio::net::TcpListener) -> Result<(), io::Error> {
+    use hyper_util::rt::TokioIo;
+    let mut make_service = app.into_make_service();
+    loop {
+        let (socket, _addr) = listener.accept().await.unwrap();
+        let tower_service = make_service.call(&socket).await.unwrap();
+
+        tokio::spawn(async move {
+            let socket = TokioIo::new(socket);
+            let hyper_service =
+                hyper::service::service_fn(move |request: axum::http::Request<Incoming>| {
+                    tower_service.clone().call(request)
+                });
+
+            hyper::server::conn::http1::Builder::new()
+                .serve_connection(socket, hyper_service)
+                .await
+                .unwrap()
+        });
+    }
 }

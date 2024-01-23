@@ -1,4 +1,4 @@
-# HAProxy config
+# Stream Owl
 
 > **Stream or download HTTP resources while using them as local files**
 
@@ -20,6 +20,7 @@ Features:
  - Recovers download progress
  - Limit the bandwidth used
  - Prioritize one stream over another
+ - Handles server errors and disconnects without disturbing the reader
 
 ## License options
 This work is available under the Gnu Public License (version 3). For other licenses please contact me.

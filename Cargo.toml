@@ -24,6 +24,7 @@ hickory-resolver = "0.24.0"
 http = "1"
 http-body-util = "0.1.0-rc.3"
 hyper = { version = "1.0.0-rc.4", features = ["full"] }
+hyper-util = { version = "0.1.2", features = ["tokio", "http1", "http2", "server"] }
 network-interface = "1.0.3"
 pin-project-lite = "0.2.13"
 rangemap = "1.4.0"

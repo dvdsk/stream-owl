@@ -1547,6 +1547,7 @@ dependencies = [
  "http 1.0.0",
  "http-body-util",
  "hyper 1.1.0",
+ "hyper-util",
  "network-interface",
  "pin-project-lite",
  "rand",
