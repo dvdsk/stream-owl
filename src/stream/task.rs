@@ -1,4 +1,3 @@
-use crate::http_client::Error as HttpError;
 use crate::http_client::RangeRefused;
 use crate::http_client::RangeSupported;
 use crate::http_client::Size;
@@ -18,6 +17,7 @@ use super::Error;
 use futures_concurrency::future::Race;
 
 mod race_results;
+mod retry;
 use race_results::*;
 
 #[derive(Debug)]
@@ -27,7 +27,7 @@ pub enum StreamDone {
 }
 
 // the writer will limit how fast we receive data using backpressure
-#[instrument(ret, skip_all)]
+#[instrument(ret, err, skip_all)]
 pub(crate) async fn new(
     url: http::Uri,
     storage: StoreWriter,
@@ -36,6 +36,7 @@ pub(crate) async fn new(
     bandwidth_lim: BandwidthLim,
     stream_size: Size,
 ) -> Result<StreamDone, Error> {
+    let mut retry = retry::Decider::default();
     let start_pos = 0;
     let chunk_size = 1_000;
     let mut target = StreamTarget::new(storage, start_pos, chunk_size);
@@ -58,52 +59,73 @@ pub(crate) async fn new(
         }
     };
 
-    client.stream_size();
-
     loop {
-        let client_without_range = match client {
+        client = match client {
             StreamingClient::RangesSupported(client) => {
-                let res = stream_range(client, &mut target, &mut seek_rx).await;
+                let res = stream_ranges(client, &mut target, &mut seek_rx, &mut retry).await;
                 match res {
-                    StreamRes::Done => return Ok(StreamDone::DownloadedAll),
-                    StreamRes::Canceld => return Ok(StreamDone::Canceld),
-                    StreamRes::Err(e) => return Err(e),
-                    StreamRes::RefuseRange(client) => client,
+                    RangeRes::Done => return Ok(StreamDone::DownloadedAll),
+                    RangeRes::Canceld => return Ok(StreamDone::Canceld),
+                    RangeRes::Err(e) => return Err(e),
+                    RangeRes::RefuseRange(new_client) => StreamingClient::RangesRefused(new_client),
                 }
             }
-            StreamingClient::RangesRefused(client_with_stream) => client_with_stream,
-        };
-
-        let builder = client_without_range.builder();
-        let receive_seek = seek_rx.recv().map(Res2::Seek);
-        let mut reader = client_without_range.into_reader();
-        let write = reader.stream_to_writer(&mut target, None).map(Res2::Write);
-
-        let pos = match (write, receive_seek).race().await {
-            Res2::Seek(Some(relevant_pos)) => relevant_pos,
-            Res2::Seek(None) => return Ok(StreamDone::Canceld),
-            Res2::Write(Err(e)) => return Err(Error::HttpClient(e)),
-            Res2::Write(Ok(())) => {
-                info!("At end of stream, waiting for seek");
-                tracing::error!("Could be missing first part of the stream (very rare) if the server only stopped serving range requests half way through and we miss where seeking beyond the start when starting");
-                stream_size.mark_stream_end(target.pos());
-                match seek_rx.recv().await {
-                    Some(pos) => pos,
-                    None => return Ok(StreamDone::Canceld),
+            StreamingClient::RangesRefused(client) => {
+                match stream_all(client, &stream_size, &mut seek_rx, &mut target).await {
+                    AllRes::Error(e) => return Err(e),
+                    AllRes::StreamDone(reason) => return Ok(reason),
+                    AllRes::SeekPerformed(new_client) => new_client,
                 }
             }
         };
-
-        // do not concurrently wait for seeks, since we probably wont
-        // get range support so any seek would translate to starting the stream
-        // again. Which is wat we are doing here.
-        client = builder.connect(&target).await?;
-        target.set_pos(pos);
     }
 }
 
+enum AllRes {
+    Error(Error),
+    SeekPerformed(StreamingClient),
+    StreamDone(StreamDone),
+}
+
+async fn stream_all(
+    client_without_range: RangeRefused,
+    stream_size: &Size,
+    seek_rx: &mut mpsc::Receiver<u64>,
+    target: &mut StreamTarget,
+) -> AllRes {
+    let builder = client_without_range.builder();
+    let receive_seek = seek_rx.recv().map(Res2::Seek);
+    let mut reader = client_without_range.into_reader();
+    let write = reader.stream_to_writer(target, None).map(Res2::Write);
+
+    let pos = match (write, receive_seek).race().await {
+        Res2::Seek(Some(pos)) => pos,
+        Res2::Seek(None) => return AllRes::StreamDone(StreamDone::Canceld),
+        Res2::Write(Err(e)) => return AllRes::Error(Error::HttpClient(e)),
+        Res2::Write(Ok(())) => {
+            info!("At end of stream, waiting for seek");
+            tracing::error!("Could be missing first part of the stream (very rare) if the server only stopped serving range requests half way through and we miss where seeking beyond the start when starting");
+            stream_size.mark_stream_end(target.pos());
+            match seek_rx.recv().await {
+                Some(pos) => pos,
+                None => return AllRes::StreamDone(StreamDone::Canceld),
+            }
+        }
+    };
+
+    // do not concurrently wait for seeks, since we probably wont
+    // get range support so any seek would translate to starting the stream
+    // again. Which is wat we are doing here.
+    let client = match builder.connect(&target).await {
+        Err(e) => return AllRes::Error(Error::HttpClient(e)),
+        Ok(client) => client,
+    };
+    target.set_pos(pos);
+    AllRes::SeekPerformed(client)
+}
+
 #[derive(Debug)]
-enum StreamRes {
+enum RangeRes {
     Done,
     Canceld,
     Err(Error),
@@ -111,48 +133,63 @@ enum StreamRes {
 }
 
 #[instrument(level = "debug", skip(client, target, seek_rx), ret)]
-async fn stream_range(
+async fn stream_ranges(
     mut client: RangeSupported,
     target: &mut StreamTarget,
     seek_rx: &mut mpsc::Receiver<u64>,
-) -> StreamRes {
+    retry: &mut retry::Decider,
+) -> RangeRes {
     loop {
         let client_builder = client.builder();
 
         let next_pos = loop {
-            let stream = handle_partial_stream(client, target).map(Into::into);
+            let stream = process_one_stream(client, target).map(Into::into);
             let get_seek = seek_rx.recv().map(Res3::Seek);
             client = match (stream, get_seek).race().await {
-                Res3::Seek(None) => return StreamRes::Canceld,
-                Res3::Seek(Some(pos)) => break pos,
+                Res3::Seek(None) => return RangeRes::Canceld,
+                Res3::Seek(Some(pos)) => break Some(pos),
                 Res3::StreamRangesSupported(client) => client,
                 Res3::StreamRangesRefused(client) => {
                     warn!("Got not seekable stream");
-                    return StreamRes::RefuseRange(client);
+                    return RangeRes::RefuseRange(client);
                 }
-                Res3::StreamDone => return StreamRes::Done,
-                Res3::StreamError(e) => return StreamRes::Err(e),
+                Res3::StreamDone => return RangeRes::Done,
+                Res3::StreamError(Error::HttpClient(e)) => match retry.could_succeed(e) {
+                    retry::CouldSucceed::Yes => {
+                        retry.ready().await;
+                        break None;
+                    }
+                    retry::CouldSucceed::No(e) => {
+                        return RangeRes::Err(e);
+                    }
+                },
+                Res3::StreamError(unrecoverable_err) => {
+                    return RangeRes::Err(unrecoverable_err);
+                }
             }
         };
 
-        target.set_pos(next_pos);
+        if let Some(pos) = next_pos {
+            target.set_pos(pos);
+        }
+
         client = loop {
             let get_seek = seek_rx.recv().map(Res4::Seek);
             let get_client_at_new_pos = client_builder.clone().connect(target).map(Into::into);
 
             match (get_client_at_new_pos, get_seek).race().await {
-                Res4::Seek(None) => return StreamRes::Canceld,
+                Res4::Seek(None) => return RangeRes::Canceld,
                 Res4::Seek(Some(pos)) => target.set_pos(pos),
-                Res4::GetClientError(e) => return StreamRes::Err(e),
+                Res4::GetClientError(e) => return RangeRes::Err(e),
                 Res4::GotRangesSupported(client) => break client,
-                Res4::GotRangesRefused(client) => return StreamRes::RefuseRange(client),
+                Res4::GotRangesRefused(client) => return RangeRes::RefuseRange(client),
             }
         }
     }
 }
 
 #[instrument(level = "debug", skip_all, ret)]
-async fn handle_partial_stream(
+async fn process_one_stream(
     client: RangeSupported,
     target: &mut StreamTarget,
 ) -> Result<Option<StreamingClient>, Error> {
@@ -176,7 +213,6 @@ async fn handle_partial_stream(
 
     match res {
         Ok(new_client) => Ok(Some(new_client)),
-        Err(HttpError::InvalidRange) => todo!(),
         Err(e) => return Err(Error::HttpClient(e)),
     }
 }

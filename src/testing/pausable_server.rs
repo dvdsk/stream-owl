@@ -18,9 +18,12 @@ use tracing::instrument;
 
 use crate::testing::test_data;
 
+mod conn;
+pub use conn::{ConnControls, TestConn};
+
 struct ControllableServer {
     test_data: Vec<u8>,
-    pause_controls: Controls,
+    pause_controls: ServerControls,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -75,12 +78,12 @@ struct InnerControls {
 }
 
 #[derive(Debug, Clone)]
-pub struct Controls {
+pub struct ServerControls {
     inner: Arc<Mutex<InnerControls>>,
     notify: Arc<Notify>,
 }
 
-impl Controls {
+impl ServerControls {
     pub fn new() -> Self {
         let inner = InnerControls {
             on_event: Vec::new(),
@@ -179,7 +182,8 @@ async fn handler(
 /// Must be run within a tokio runtime, if it does not this fn will panic
 pub fn pausable_server(
     test_file_size: u64,
-    pause_controls: Controls,
+    pause_controls: ServerControls,
+    conn_controls: ConnControls,
 ) -> (Uri, JoinHandle<Result<(), std::io::Error>>) {
     let shared_state = Arc::new(ControllableServer {
         test_data: test_data(test_file_size as u32),
@@ -199,7 +203,7 @@ pub fn pausable_server(
     listener.set_nonblocking(true).unwrap();
     let listener = tokio::net::TcpListener::from_std(listener).unwrap();
     let port = listener.local_addr().unwrap().port();
-    let server = sever_loop(app, listener);
+    let server = sever_loop(app, listener, conn_controls);
     let server = tokio::task::spawn(server);
 
     let uri: Uri = format!("http://localhost:{port}/stream_test")
@@ -210,24 +214,35 @@ pub fn pausable_server(
     (uri, server)
 }
 
-async fn sever_loop(app: Router, listener: tokio::net::TcpListener) -> Result<(), io::Error> {
+async fn sever_loop(
+    app: Router,
+    listener: tokio::net::TcpListener,
+    conn_controls: ConnControls,
+) -> Result<(), io::Error> {
     use hyper_util::rt::TokioIo;
     let mut make_service = app.into_make_service();
     loop {
+        let conn_controls = conn_controls.clone();
         let (socket, _addr) = listener.accept().await.unwrap();
         let tower_service = make_service.call(&socket).await.unwrap();
 
         tokio::spawn(async move {
-            let socket = TokioIo::new(socket);
             let hyper_service =
                 hyper::service::service_fn(move |request: axum::http::Request<Incoming>| {
                     tower_service.clone().call(request)
                 });
 
-            hyper::server::conn::http1::Builder::new()
+            let socket = TestConn::new(socket, conn_controls);
+            let socket = TokioIo::new(socket);
+            let res = hyper::server::conn::http1::Builder::new()
                 .serve_connection(socket, hyper_service)
-                .await
-                .unwrap()
+                .await;
+
+            if let Err(ref e) = res {
+                if !format!("{e:?}").contains("Test server forced a disconnect") {
+                    res.unwrap();
+                }
+            }
         });
     }
 }

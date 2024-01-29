@@ -1,13 +1,11 @@
 use std::ops::Range;
 
 use derivative::Derivative;
-use http::header::InvalidHeaderValue;
-use http::uri::InvalidUri;
 use http::{header, HeaderValue, StatusCode};
 use hyper::body::Incoming;
 use tracing::{debug, info, warn};
 
-use crate::network::{Network, BandwidthLim};
+use crate::network::{BandwidthLim, Network};
 use crate::target::StreamTarget;
 mod io;
 mod read;
@@ -18,66 +16,14 @@ mod size;
 pub(crate) use size::Size;
 
 mod connection;
+mod error;
+
+pub use error::Error;
 use connection::Connection;
 
 use self::connection::HyperResponse;
 use self::read::InnerReader;
 use self::response::ValidResponse;
-
-#[derive(Debug, thiserror::Error)]
-pub enum Error {
-    #[error("")]
-    Response(#[from] response::Error),
-    #[error("Error setting up the stream request, {0}")]
-    Http(#[from] http::Error),
-    #[error("Error creating socket, {0}")]
-    SocketCreation(std::io::Error),
-    #[error("Could not restrict traffic to one network interface, {0}")]
-    Restricting(std::io::Error),
-    #[error("Could not connect to server, {0}")]
-    Connecting(std::io::Error),
-    #[error("Could not configure socket, {0}")]
-    SocketConfig(std::io::Error),
-    #[error("Could not resolve dns, resolve error, {0}")]
-    DnsResolve(#[from] hickory_resolver::error::ResolveError),
-    #[error("Could not resolve dns, no ip addresses for server")]
-    DnsEmpty,
-    #[error("Url had no server part")]
-    UrlWithoutHost,
-    #[error("server returned error,\n\tcode: {code}\n\tbody: {body:?}")]
-    StatusNotOk {
-        code: StatusCode,
-        body: Option<String>,
-    },
-    #[error("server contained invalid characters, {0}")]
-    InvalidHost(InvalidHeaderValue),
-    #[error("server does not report we can seek in streams")]
-    RangesNotAccepted,
-    #[error("Invalid range")]
-    InvalidRange,
-    #[error("server redirected us however did not send location")]
-    MissingRedirectLocation,
-    #[error("The redirect location contained invalid characters, {0}")]
-    BrokenRedirectLocation(header::ToStrError),
-    #[error("The redirect location is not a url, {0}")]
-    InvalidUriRedirectLocation(InvalidUri),
-    #[error("server redirected us more then 10 times")]
-    TooManyRedirects,
-    #[error("Server did not send any data")]
-    MissingFrame,
-    #[error("Server send a PARTIAL_CONTENT response without range header or we did not understand the range")]
-    MissingRange,
-    #[error("Could not send request to server: {0}")]
-    SendingRequest(hyper::Error),
-    #[error("Could not set up connection to server: {0}")]
-    Handshake(hyper::Error),
-    #[error("Could not read response body: {0}")]
-    ReadingBody(hyper::Error),
-    #[error("Could now write the received data to storage: {0}")]
-    WritingData(std::io::Error),
-    #[error("Could not throw away body: {0}")]
-    EmptyingBody(hyper::Error),
-}
 
 #[derive(Debug, Clone)]
 pub(crate) struct Cookies(Vec<String>);
@@ -130,10 +76,6 @@ impl RangeSupported {
         }
     }
 
-    pub(crate) fn stream_size(&self) -> Size {
-        self.client.size.clone()
-    }
-
     pub(crate) fn builder(&self) -> ClientBuilder {
         ClientBuilder {
             restriction: self.client.restriction.clone(),
@@ -177,10 +119,6 @@ impl RangeRefused {
             size: self.client.size.clone(),
         }
     }
-
-    pub(crate) fn stream_size(&self) -> Size {
-        self.client.size.clone()
-    }
 }
 
 #[derive(Derivative)]
@@ -202,7 +140,7 @@ impl Client {
     async fn send_range_request(
         &mut self,
         range: &str,
-    ) -> Result<hyper::Response<Incoming>, Error> {
+    ) -> Result<hyper::Response<Incoming>, error::Error> {
         let response = self
             .conn
             .send_range_request(&self.url, &self.host, &self.cookies, range)
@@ -231,8 +169,14 @@ pub(crate) struct ClientBuilder {
 
 impl ClientBuilder {
     #[tracing::instrument(level = "debug")]
-    pub(crate) async fn connect(self, target: &StreamTarget) -> Result<StreamingClient, Error> {
-        debug!("(re)connecting, will try to start stream at: {}", target.pos());
+    pub(crate) async fn connect(
+        self,
+        target: &StreamTarget,
+    ) -> Result<StreamingClient, error::Error> {
+        debug!(
+            "(re)connecting, will try to start stream at: {}",
+            target.pos()
+        );
         let Self {
             restriction,
             bandwidth_lim,
@@ -258,7 +202,7 @@ impl ClientBuilder {
 
         while response.status() == StatusCode::FOUND {
             if numb_redirect > 10 {
-                return Err(Error::TooManyRedirects);
+                return Err(error::Error::TooManyRedirects);
             }
             url = redirect_url(response)?;
             if url.host() != prev_url.host() {
@@ -319,7 +263,7 @@ impl StreamingClient {
         bandwidth_lim: BandwidthLim,
         size: Size,
         target: &StreamTarget,
-    ) -> Result<Self, Error> {
+    ) -> Result<Self, error::Error> {
         ClientBuilder {
             restriction,
             bandwidth_lim,
@@ -330,13 +274,6 @@ impl StreamingClient {
         .connect(target)
         .await
     }
-
-    pub(crate) fn stream_size(&self) -> Size {
-        match self {
-            StreamingClient::RangesSupported(client) => client.stream_size(),
-            StreamingClient::RangesRefused(client) => client.stream_size(),
-        }
-    }
 }
 
 impl Client {
@@ -344,7 +281,7 @@ impl Client {
     pub(crate) async fn try_get_range(
         mut self,
         Range { start, end }: Range<u64>,
-    ) -> Result<StreamingClient, Error> {
+    ) -> Result<StreamingClient, error::Error> {
         assert!(Some(start) < self.stream_size().known());
 
         let range = format!("bytes={start}-{end}");
@@ -376,13 +313,13 @@ impl Client {
     }
 }
 
-fn redirect_url<T>(redirect: hyper::Response<T>) -> Result<hyper::Uri, Error> {
+fn redirect_url<T>(redirect: hyper::Response<T>) -> Result<hyper::Uri, error::Error> {
     redirect
         .headers()
         .get(header::LOCATION)
-        .ok_or(Error::MissingRedirectLocation)?
+        .ok_or(error::Error::MissingRedirectLocation)?
         .to_str()
-        .map_err(Error::BrokenRedirectLocation)?
+        .map_err(error::Error::BrokenRedirectLocation)?
         .parse()
-        .map_err(Error::InvalidUriRedirectLocation)
+        .map_err(error::Error::InvalidUriRedirectLocation)
 }

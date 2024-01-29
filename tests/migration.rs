@@ -2,7 +2,7 @@ use std::io::{Read, Seek};
 use std::num::NonZeroUsize;
 use std::sync::Arc;
 
-use stream_owl::testing::{Action, Controls, Event, TestEnded};
+use stream_owl::testing::{Action, ServerControls, ConnControls, Event, TestEnded};
 use stream_owl::{testing, StreamBuilder};
 use tokio::sync::Notify;
 
@@ -14,22 +14,24 @@ fn migrate_to_disk() {
             .to_limited_mem(NonZeroUsize::new(2000).unwrap())
     };
 
-    let controls = Controls::new();
-    controls.push(Event::ByteRequested(3000), Action::Cut { at: 3000 });
+    let conn_controls = ConnControls::new(Vec::new());
+    let server_controls = ServerControls::new();
+    server_controls.push(Event::ByteRequested(3000), Action::Cut { at: 3000 });
 
     let test_file_size = 10_000u32;
     let test_done = Arc::new(Notify::new());
 
     let (runtime_thread, mut handle) = {
-        let controls = controls.clone();
+        let server_controls = server_controls.clone();
+        let conn_controls = conn_controls.clone();
         testing::setup_reader_test(&test_done, test_file_size, configure, move |size| {
-            testing::pausable_server(size, controls)
+            testing::pausable_server(size, server_controls, conn_controls)
         })
     };
 
     let mut reader = handle.try_get_reader().unwrap();
     reader.seek(std::io::SeekFrom::Start(1_000)).unwrap();
-    controls.unpause_all();
+    server_controls.unpause_all();
     reader.read_exact(&mut vec![0; 1_000]).unwrap();
 
     handle

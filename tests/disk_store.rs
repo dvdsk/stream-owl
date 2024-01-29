@@ -3,8 +3,9 @@ use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 
-use stream_owl::testing::{test_data_range, Action, Controls, Event, TestEnded};
+use stream_owl::testing::{test_data_range, Action, ServerControls, Event, TestEnded};
 use stream_owl::{testing, StreamBuilder, StreamDone};
+use testing::ConnControls;
 use tokio::sync::Notify;
 use tracing::info;
 
@@ -16,20 +17,22 @@ fn after_seeking_forward_download_still_completes() {
         move |b: StreamBuilder<false>| b.with_prefetch(0).to_disk(path).start_paused(true)
     };
 
-    let controls = Controls::new();
+    let conn_controls = ConnControls::new(Vec::new());
+    let server_controls = ServerControls::new();
     let test_file_size = 10_000u32;
     let test_done = Arc::new(Notify::new());
 
     let (runtime_thread, mut handle) = {
-        let controls = controls.clone();
+        let server_controls = server_controls.clone();
+        let conn_controls = conn_controls.clone();
         testing::setup_reader_test(&test_done, test_file_size, configure, move |size| {
-            testing::pausable_server(size, controls)
+            testing::pausable_server(size, server_controls, conn_controls)
         })
     };
 
     let mut reader = handle.try_get_reader().unwrap();
     reader.seek(std::io::SeekFrom::Start(8_000)).unwrap();
-    controls.unpause_all();
+    server_controls.unpause_all();
 
     handle.unpause_blocking();
 
@@ -53,16 +56,18 @@ fn resumes() {
     };
 
     {
-        let controls = Controls::new();
-        controls.push(Event::Any, Action::Pause);
+        let conn_controls = ConnControls::new(Vec::new());
+        let server_controls = ServerControls::new();
+        server_controls.push(Event::Any, Action::Pause);
 
         let test_file_size = 5_000u32;
         let test_done = Arc::new(Notify::new());
 
         let (runtime_thread, mut handle) = {
-            let controls = controls.clone();
+        let server_controls = server_controls.clone();
+        let conn_controls = conn_controls.clone();
             testing::setup_reader_test(&test_done, test_file_size, configure.clone(), move |size| {
-                testing::pausable_server(size, controls)
+                testing::pausable_server(size, server_controls, conn_controls)
             })
         };
 
@@ -72,9 +77,9 @@ fn resumes() {
         // seek is not instant, make sure the stream task has
         // processed it.
         thread::sleep(Duration::from_secs(1));
-        controls.unpause_all();
+        server_controls.unpause_all();
 
-        controls.push(Event::ByteRequested(5_000), Action::Cut { at: 5_000 });
+        server_controls.push(Event::ByteRequested(5_000), Action::Cut { at: 5_000 });
         // when this reads the last byte (byte 5k in the stream). The
         // test server will crash, making sure we do not read further.
         reader.read_exact(&mut vec![0; 3_000]).unwrap();
@@ -86,13 +91,15 @@ fn resumes() {
     assert_read_part_downloaded(test_dl_path);
     info!("Part 2 of test, checking if read uses made progress");
 
-    let controls = Controls::new();
+    let conn_controls = ConnControls::new(Vec::new());
+    let server_controls = ServerControls::new();
     let test_file_size = 5_000u32;
     let test_done = Arc::new(Notify::new());
     let (runtime_thread, mut handle) = {
-        let controls = controls.clone();
+        let server_controls = server_controls.clone();
+        let conn_controls = conn_controls.clone();
         testing::setup_reader_test(&test_done, test_file_size, configure, move |size| {
-            testing::pausable_server(size, controls)
+            testing::pausable_server(size, server_controls, conn_controls)
         })
     };
 

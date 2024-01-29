@@ -13,7 +13,7 @@ use tracing_subscriber::fmt::time::uptime;
 use crate::{StreamBuilder, StreamDone, StreamError, StreamHandle};
 
 mod pausable_server;
-pub use pausable_server::{pausable_server, Action, Controls, Event};
+pub use pausable_server::{pausable_server, Action, ServerControls, ConnControls, Event};
 
 mod static_file_server;
 pub use static_file_server::static_file_server;

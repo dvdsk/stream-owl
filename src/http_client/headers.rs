@@ -1,29 +1,46 @@
+use std::fmt::Display;
 use std::num::ParseIntError;
 use std::ops::Range;
 
 use axum::response::Response;
 use http::header;
-use http::header::ToStrError;
 
-#[derive(Debug, thiserror::Error)]
+/// wrapper around [`http::header::ToStrError`] providing a slow [`PartialEq`]
+/// implementation
+#[derive(Debug)]
+pub struct NotUtf8(http::header::ToStrError);
+
+impl PartialEq for NotUtf8 {
+    fn eq(&self, other: &Self) -> bool {
+        self.to_string() == other.to_string()
+    }
+}
+
+impl Display for NotUtf8 {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+#[derive(Debug, thiserror::Error, PartialEq)]
 pub enum Error {
-    #[error("")]
-    CorruptHeader(ToStrError),
-    #[error("")]
+    #[error("Header is not a utf8 string: {0}")]
+    NotUtf8(NotUtf8),
+    #[error("Could not parse content length as a number: {0}")]
     ContentLengthNotNumber(ParseIntError),
-    #[error("")]
+    #[error("Response with statuscode PartialContent should have a content range")]
     MissingContentRange,
-    #[error("")]
+    #[error("A content range or length should be in byte")]
     RangeNotBytes,
-    #[error("")]
+    #[error("Range header should always contain a `/` symbol")]
     InvalidRangeHeader,
-    #[error("")]
+    #[error("Content Range must have a `-` separating range start and stop")]
     MissingRangeDelimiter,
-    #[error("")]
+    #[error("Could not parse range start as a number: {0}")]
     RangeStartNotNumber(ParseIntError),
-    #[error("")]
+    #[error("Could not parse range stop as a number: {0}")]
     RangeStopNotNumber(ParseIntError),
-    #[error("")]
+    #[error("The range start must be smaller then the end")]
     RangeStartSmallerThenEnd,
 }
 
@@ -34,7 +51,8 @@ pub fn content_length<T>(response: &Response<T>) -> Result<Option<u64>, Error> {
         .map(|header| {
             header
                 .to_str()
-                .map_err(Error::CorruptHeader)?
+                .map_err(NotUtf8)
+                .map_err(Error::NotUtf8)?
                 .parse()
                 .map_err(Error::ContentLengthNotNumber)
         })
@@ -47,7 +65,8 @@ fn range_and_total<T>(response: &Response<T>) -> Result<(&str, &str), Error> {
         .get(header::CONTENT_RANGE)
         .ok_or(Error::MissingContentRange)?
         .to_str()
-        .map_err(Error::CorruptHeader)?
+        .map_err(NotUtf8)
+        .map_err(Error::NotUtf8)?
         .strip_prefix("bytes ")
         .ok_or(Error::RangeNotBytes)?
         .rsplit_once("/")

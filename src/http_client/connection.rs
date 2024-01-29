@@ -13,7 +13,7 @@ use tracing::instrument;
 use crate::network::{Network, BandwidthLim};
 
 use super::io::ThrottlableIo;
-use super::{Cookies, Error};
+use super::{Cookies, error::Error};
 
 #[derive(Debug)]
 pub(crate) struct Connection {

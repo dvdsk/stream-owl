@@ -25,15 +25,15 @@ pub(crate) enum ValidResponse {
     },
 }
 
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, thiserror::Error, PartialEq)]
 pub enum Error {
-    #[error("")]
+    #[error("Response with status PARTIAL_CONTENT had an incorrect header: {0}")]
     InvalidPartialContentHeader(headers::Error),
-    #[error("")]
+    #[error("Response with status RANGE_NOT_SATISFIABLE had an incorrect header: {0}")]
     InvalidRangeNotSatHeader(headers::Error),
-    #[error("")]
+    #[error("Response with status OK had an incorrect header: {0}")]
     InvalidOkHeader(headers::Error),
-    #[error("")]
+    #[error("Server reports a problem with our request, statuscode: {0}")]
     IncorrectStatus(StatusCode),
     #[error("The http spec does not allow range: * (indicating unsatisfied) with a PARTIAL_CONTENT status")]
     UnsatisfiedRangeInPartialContent,

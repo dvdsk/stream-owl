@@ -9,7 +9,7 @@ use crate::target::StreamTarget;
 
 use super::size::Size;
 // todo fix error, should be task stream error?
-use super::{Client, Error};
+use super::{Client, error::Error};
 
 #[derive(Debug)]
 pub(crate) struct InnerReader {
