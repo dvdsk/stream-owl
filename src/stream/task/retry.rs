@@ -14,6 +14,7 @@ struct Event {
     #[derivative(Debug(format_with = "fmt_at_field"))]
     last_occurrence: Instant,
     approach: Backoff,
+    n_occurred: usize,
 }
 
 impl Event {
@@ -57,9 +58,10 @@ fn fmt_at_field(
     fmt.write_fmt(format_args!("{}ms ago", instant.elapsed().as_millis()))
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub(super) struct Decider {
     recent: Vec<Event>,
+    max_retries: usize,
 }
 
 #[derive(Debug)]
@@ -88,6 +90,26 @@ pub(super) enum CouldSucceed {
 }
 
 impl Decider {
+    pub(crate) fn new() -> Self {
+        Self {
+            recent: Vec::new(),
+            max_retries: usize::MAX,
+        }
+    }
+    pub(crate) fn with_max_retries(n: usize) -> Self {
+        Self {
+            recent: Vec::new(),
+            max_retries: n,
+        }
+    }
+
+    fn n_occurred(&self, error: &Error) -> usize {
+        self.recent
+            .iter()
+            .filter(|event| event.error == *error)
+            .count()
+    }
+
     fn remove_stale_entries(&mut self) {
         let to_remove: Vec<_> = self
             .recent
@@ -103,7 +125,7 @@ impl Decider {
     }
 
     #[instrument(level = "debug")]
-    fn update(&mut self, error: Error, approach: Backoff) {
+    fn register(&mut self, error: Error, approach: Backoff) {
         self.remove_stale_entries();
 
         let existing = self.recent.iter_mut().find(|event| event.error == error);
@@ -117,6 +139,7 @@ impl Decider {
                 original_error: Instant::now(),
                 last_occurrence: Instant::now(),
                 approach,
+                n_occurred: 1,
             });
         }
     }
@@ -125,23 +148,25 @@ impl Decider {
     pub fn could_succeed(&mut self, err: Error) -> CouldSucceed {
         use Error as E;
         const MAX_RETY_INTERVAL: Duration = Duration::from_secs(5 * 60);
+        const RETRY_FAST: Duration = Duration::from_millis(200);
+        const RETRY_SLOW: Duration = Duration::from_millis(2000);
 
         match err {
             E::SocketCreation(_) | E::SocketConfig(_) => {
-                self.update(err, Backoff::Constant(Duration::from_secs(5)));
+                self.register(err, Backoff::Constant(RETRY_SLOW));
                 CouldSucceed::Yes
             }
             E::Connecting(_)
             | E::DnsResolve(_)
             | E::SendingRequest(_)
             | E::Handshake(_)
-            | E::ReadingBody(_)
-            | E::EmptyingBody(_) => {
-                self.update(
-                    err,
-                    Backoff::fib(Duration::from_millis(200), MAX_RETY_INTERVAL),
-                );
-                CouldSucceed::Yes
+            | E::ReadingBody(_) => {
+                if self.n_occurred(&err) > self.max_retries {
+                    CouldSucceed::No(super::Error::HttpClient(err))
+                } else {
+                    self.register(err, Backoff::fib(RETRY_FAST, MAX_RETY_INTERVAL));
+                    CouldSucceed::Yes
+                }
             }
             E::StatusNotOk {
                 code:
@@ -150,8 +175,12 @@ impl Decider {
                     | StatusCode::GATEWAY_TIMEOUT,
                 ..
             } => {
-                self.update(err, Backoff::fib(Duration::from_secs(2), MAX_RETY_INTERVAL));
-                CouldSucceed::Yes
+                if self.n_occurred(&err) > self.max_retries {
+                    CouldSucceed::No(super::Error::HttpClient(err))
+                } else {
+                    self.register(err, Backoff::fib(RETRY_SLOW, MAX_RETY_INTERVAL));
+                    CouldSucceed::Yes
+                }
             }
 
             E::Response(_) | E::WritingData(_) => todo!(),

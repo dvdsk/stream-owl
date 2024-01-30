@@ -1,6 +1,8 @@
 use std::ops::Range;
+use std::time::Duration;
 
 use derivative::Derivative;
+use futures::Future;
 use http::{header, HeaderValue, StatusCode};
 use hyper::body::Incoming;
 use tracing::{debug, info, warn};
@@ -192,6 +194,7 @@ impl ClientBuilder {
         let first_range = format!("bytes={start}-{end}");
 
         let mut conn = Connection::new(&url, &restriction, &bandwidth_lim).await?;
+        info!("");
         let mut response = conn
             .send_initial_request(&url, &cookies, &first_range)
             .await?;
@@ -322,4 +325,16 @@ fn redirect_url<T>(redirect: hyper::Response<T>) -> Result<hyper::Uri, error::Er
         .map_err(error::Error::BrokenRedirectLocation)?
         .parse()
         .map_err(error::Error::InvalidUriRedirectLocation)
+}
+
+trait FutureTimeout {
+    type Future;
+    fn with_timeout(self, dur: Duration) -> tokio::time::Timeout<Self::Future>;
+}
+
+impl<F: Future> FutureTimeout for F {
+    type Future = F;
+    fn with_timeout(self, dur: Duration) -> tokio::time::Timeout<Self::Future> {
+        tokio::time::timeout(dur, self)
+    }
 }

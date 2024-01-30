@@ -35,11 +35,16 @@ pub(crate) async fn new(
     restriction: Option<Network>,
     bandwidth_lim: BandwidthLim,
     stream_size: Size,
+    max_retries: Option<usize>,
 ) -> Result<StreamDone, Error> {
-    let mut retry = retry::Decider::default();
     let start_pos = 0;
     let chunk_size = 1_000;
     let mut target = StreamTarget::new(storage, start_pos, chunk_size);
+    let mut retry = if let Some(max_retries) = max_retries {
+        retry::Decider::with_max_retries(max_retries)
+    } else {
+        retry::Decider::new()
+    };
 
     let mut client = loop {
         let receive_seek = seek_rx.recv().map(Res1::Seek);

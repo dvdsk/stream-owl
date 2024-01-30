@@ -62,20 +62,70 @@ pub enum Error {
     MissingFrame,
     /// Could not send request to server
     #[error("Could not send request to server: {0}")]
-    SendingRequest(hyper::Error),
+    SendingRequest(#[from] SendingRequest),
     /// Could not set up connection to server
     #[error("Could not set up connection to server: {0}")]
-    Handshake(hyper::Error),
+    Handshake(#[from] Handshake),
     /// Could not read response body
     #[error("Could not read response body: {0}")]
-    ReadingBody(hyper::Error),
+    ReadingBody(#[from] ReadingBody),
     /// Could now write the received data to storage
     #[error("Could now write the received data to storage: {0}")]
     WritingData(std::io::Error),
-    /// Could not throw away body
-    #[error("Could not throw away body: {0}")]
-    EmptyingBody(hyper::Error),
 }
+
+impl Error {
+    /// Does the error represent something outside the client device
+    /// taking too long?
+    pub fn is_external_timeout(&self) -> bool {
+        match self {
+            Error::Response(_) => false,
+            Error::Http(_) => false,
+            Error::SocketCreation(_) => false,
+            Error::Restricting(_) => false,
+            Error::Connecting(_) => todo!(),
+            Error::SocketConfig(_) => false,
+            Error::DnsResolve(e) => {
+                matches!(e.kind(), hickory_resolver::error::ResolveErrorKind::Timeout)
+            }
+            Error::DnsEmpty => false,
+            Error::UrlWithoutHost => false,
+            Error::StatusNotOk { .. } => false,
+            Error::InvalidHost(_) => false,
+            Error::MissingRedirectLocation => false,
+            Error::BrokenRedirectLocation(_) => false,
+            Error::InvalidUriRedirectLocation(_) => false,
+            Error::TooManyRedirects => false,
+            Error::MissingFrame => false,
+            Error::SendingRequest(e) => matches!(e, SendingRequest::TimedOut),
+            Error::Handshake(e) => matches!(e, Handshake::TimedOut),
+            Error::ReadingBody(e) => matches!(e, ReadingBody::TimedOut),
+            Error::WritingData(_) => false,
+        }
+    }
+}
+
+macro_rules! timed_out {
+    ($struct_name:ident ) => {
+        #[derive(Debug, thiserror::Error)]
+        pub enum $struct_name {
+            #[error("Timed out")]
+            TimedOut,
+            #[error(transparent)]
+            Other(hyper::Error),
+        }
+
+        impl $struct_name {
+            pub(crate) fn timed_out(_: tokio::time::error::Elapsed) -> Self {
+                Self::TimedOut
+            }
+        }
+    };
+}
+
+timed_out!(SendingRequest);
+timed_out!(Handshake);
+timed_out!(ReadingBody);
 
 impl PartialEq for Error {
     /// Warning: **slow**
@@ -113,7 +163,6 @@ impl PartialEq for Error {
             (E::Handshake(_), E::Handshake(_)) => true,
             (E::ReadingBody(_), E::ReadingBody(_)) => true,
             (E::WritingData(e1), E::WritingData(e2)) => e1.kind() == e2.kind(),
-            (E::EmptyingBody(_), E::EmptyingBody(_)) => true,
             _ => false,
         }
     }

@@ -1,5 +1,6 @@
 use std::collections::VecDeque;
 use std::ops::Range;
+use std::time::Duration;
 
 use bytes::Bytes;
 use http_body_util::BodyExt;
@@ -8,8 +9,9 @@ use hyper::body::{Body, Incoming};
 use crate::target::StreamTarget;
 
 use super::size::Size;
+use super::{error, FutureTimeout};
 // todo fix error, should be task stream error?
-use super::{Client, error::Error};
+use super::{error::Error, Client};
 
 #[derive(Debug)]
 pub(crate) struct InnerReader {
@@ -157,11 +159,16 @@ impl InnerReader {
 #[tracing::instrument(level = "debug", err)]
 async fn get_next_data_frame(stream: &mut Incoming) -> Result<Option<Bytes>, Error> {
     loop {
-        let Some(frame) = stream.frame().await else {
+        let Some(frame) = stream
+            .frame()
+            .with_timeout(Duration::from_secs(2))
+            .await
+            .map_err(error::ReadingBody::timed_out)?
+        else {
             tracing::trace!("no more data frames");
             return Ok(None);
         };
-        let frame = frame.map_err(Error::ReadingBody)?;
+        let frame = frame.map_err(error::ReadingBody::Other)?;
 
         if let Ok(data) = frame.into_data() {
             return Ok(Some(data));

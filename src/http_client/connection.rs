@@ -1,4 +1,5 @@
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::time::Duration;
 
 use bytes::Bytes;
 use http::method::Method;
@@ -10,10 +11,11 @@ use tokio::net::{TcpSocket, TcpStream};
 use tokio::task::JoinSet;
 use tracing::instrument;
 
-use crate::network::{Network, BandwidthLim};
+use crate::network::{BandwidthLim, Network};
 
+use super::{error, FutureTimeout};
 use super::io::ThrottlableIo;
-use super::{Cookies, error::Error};
+use super::{error::Error, Cookies};
 
 #[derive(Debug)]
 pub(crate) struct Connection {
@@ -31,7 +33,11 @@ impl Connection {
     ) -> Result<Self, Error> {
         let tcp = new_tcp_stream(&url, &restriction).await?;
         let io = ThrottlableIo::new(tcp, bandwidth_lim).map_err(Error::SocketConfig)?;
-        let (request_sender, conn) = http1::handshake(io).await.map_err(Error::Handshake)?;
+        let (request_sender, conn) = http1::handshake(io)
+            .with_timeout(Duration::from_secs(2))
+            .await
+            .map_err(error::Handshake::timed_out)?
+            .map_err(error::Handshake::Other)?;
 
         let mut connection = JoinSet::new();
         connection.spawn(async move {
@@ -69,8 +75,10 @@ impl Connection {
         let response = self
             .request_sender
             .send_request(request)
+            .with_timeout(Duration::from_secs(2))
             .await
-            .map_err(Error::SendingRequest)?;
+            .map_err(error::SendingRequest::timed_out)?
+            .map_err(error::SendingRequest::Other)?;
         Ok(response)
     }
 
@@ -96,8 +104,10 @@ impl Connection {
         let response = self
             .request_sender
             .send_request(request)
+            .with_timeout(Duration::from_secs(2))
             .await
-            .map_err(Error::SendingRequest)?;
+            .map_err(error::SendingRequest::timed_out)?
+            .map_err(error::SendingRequest::Other)?;
         Ok(response)
     }
 }

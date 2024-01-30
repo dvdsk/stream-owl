@@ -30,6 +30,7 @@ pub struct StreamBuilder<const STORAGE_SET: bool> {
     restriction: Option<Network>,
     start_paused: bool,
     bandwidth: BandwidthAllowed,
+    max_retries: Option<usize>,
 }
 
 impl StreamBuilder<false> {
@@ -41,6 +42,7 @@ impl StreamBuilder<false> {
             restriction: None,
             start_paused: false,
             bandwidth: BandwidthAllowed::UnLimited,
+            max_retries: None,
         }
     }
 }
@@ -55,6 +57,7 @@ impl StreamBuilder<false> {
             restriction: self.restriction,
             start_paused: self.start_paused,
             bandwidth: self.bandwidth,
+            max_retries: self.max_retries,
         }
     }
     pub fn to_limited_mem(mut self, max_size: NonZeroUsize) -> StreamBuilder<true> {
@@ -66,6 +69,7 @@ impl StreamBuilder<false> {
             restriction: self.restriction,
             start_paused: self.start_paused,
             bandwidth: self.bandwidth,
+            max_retries: self.max_retries,
         }
     }
     pub fn to_disk(mut self, path: PathBuf) -> StreamBuilder<true> {
@@ -77,6 +81,7 @@ impl StreamBuilder<false> {
             restriction: self.restriction,
             start_paused: self.start_paused,
             bandwidth: self.bandwidth,
+            max_retries: self.max_retries,
         }
     }
 }
@@ -97,6 +102,10 @@ impl<const STORAGE_SET: bool> StreamBuilder<STORAGE_SET> {
     }
     pub fn with_bandwidth_limit(mut self, bandwidth: Bandwidth) -> Self {
         self.bandwidth = BandwidthAllowed::Limited(bandwidth);
+        self
+    }
+    pub fn with_max_retries(mut self, max_retries: usize) -> Self {
+        self.max_retries = Some(max_retries);
         self
     }
 }
@@ -168,6 +177,7 @@ impl StreamBuilder<true> {
             self.restriction,
             bandwidth_lim,
             stream_size,
+            self.max_retries,
         );
         let stream_task = pausable(stream_task, pause_rx);
         Ok((handle, stream_task))
