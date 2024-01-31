@@ -30,11 +30,12 @@ impl Connection {
         url: &hyper::Uri,
         restriction: &Option<Network>,
         bandwidth_lim: &BandwidthLim,
+        timeout: Duration,
     ) -> Result<Self, Error> {
         let tcp = new_tcp_stream(&url, &restriction).await?;
         let io = ThrottlableIo::new(tcp, bandwidth_lim).map_err(Error::SocketConfig)?;
         let (request_sender, conn) = http1::handshake(io)
-            .with_timeout(Duration::from_secs(2))
+            .with_timeout(timeout)
             .await
             .map_err(error::Handshake::timed_out)?
             .map_err(error::Handshake::Other)?;
@@ -57,6 +58,7 @@ impl Connection {
         url: &hyper::Uri,
         cookies: &Cookies,
         range: &str,
+        timeout: Duration,
     ) -> Result<HyperResponse, Error> {
         let host = url.host().ok_or(Error::UrlWithoutHost)?;
         let host = HeaderValue::from_str(host).map_err(Error::InvalidHost)?;
@@ -75,7 +77,7 @@ impl Connection {
         let response = self
             .request_sender
             .send_request(request)
-            .with_timeout(Duration::from_secs(2))
+            .with_timeout(timeout)
             .await
             .map_err(error::SendingRequest::timed_out)?
             .map_err(error::SendingRequest::Other)?;
@@ -88,6 +90,7 @@ impl Connection {
         host: &HeaderValue,
         cookies: &Cookies,
         range: &str,
+        timeout: Duration,
     ) -> Result<HyperResponse, Error> {
         let mut request = Request::builder()
             .method(Method::GET)
@@ -104,7 +107,7 @@ impl Connection {
         let response = self
             .request_sender
             .send_request(request)
-            .with_timeout(Duration::from_secs(2))
+            .with_timeout(timeout)
             .await
             .map_err(error::SendingRequest::timed_out)?
             .map_err(error::SendingRequest::Other)?;

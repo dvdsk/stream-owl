@@ -8,6 +8,7 @@ use hyper::body::Incoming;
 use tracing::{debug, info, warn};
 
 use crate::network::{BandwidthLim, Network};
+use crate::stream::retry;
 use crate::target::StreamTarget;
 mod io;
 mod read;
@@ -18,10 +19,10 @@ mod size;
 pub(crate) use size::Size;
 
 mod connection;
-mod error;
+pub mod error;
 
-pub use error::Error;
 use connection::Connection;
+pub use error::Error;
 
 use self::connection::HyperResponse;
 use self::read::InnerReader;
@@ -142,10 +143,11 @@ impl Client {
     async fn send_range_request(
         &mut self,
         range: &str,
+        timeout: Duration,
     ) -> Result<hyper::Response<Incoming>, error::Error> {
         let response = self
             .conn
-            .send_range_request(&self.url, &self.host, &self.cookies, range)
+            .send_range_request(&self.url, &self.host, &self.cookies, range, timeout)
             .await?;
         self.cookies.get_from(&response);
         Ok(response)
@@ -174,6 +176,7 @@ impl ClientBuilder {
     pub(crate) async fn connect(
         self,
         target: &StreamTarget,
+        timeout: Duration,
     ) -> Result<StreamingClient, error::Error> {
         debug!(
             "(re)connecting, will try to start stream at: {}",
@@ -193,10 +196,9 @@ impl ClientBuilder {
             .expect("should be a range to get after seek or on connect");
         let first_range = format!("bytes={start}-{end}");
 
-        let mut conn = Connection::new(&url, &restriction, &bandwidth_lim).await?;
-        info!("");
+        let mut conn = Connection::new(&url, &restriction, &bandwidth_lim, timeout).await?;
         let mut response = conn
-            .send_initial_request(&url, &cookies, &first_range)
+            .send_initial_request(&url, &cookies, &first_range, timeout)
             .await?;
         cookies.get_from(&response);
 
@@ -210,10 +212,10 @@ impl ClientBuilder {
             url = redirect_url(response)?;
             if url.host() != prev_url.host() {
                 prev_url = url.clone();
-                conn = Connection::new(&url, &restriction, &bandwidth_lim).await?;
+                conn = Connection::new(&url, &restriction, &bandwidth_lim, timeout).await?;
             }
             response = conn
-                .send_initial_request(&url, &cookies, &first_range)
+                .send_initial_request(&url, &cookies, &first_range, timeout)
                 .await?;
             cookies.get_from(&response);
 
@@ -266,16 +268,29 @@ impl StreamingClient {
         bandwidth_lim: BandwidthLim,
         size: Size,
         target: &StreamTarget,
+        retry: &mut retry::Decider,
+        timeout: Duration,
     ) -> Result<Self, error::Error> {
-        ClientBuilder {
+        let builder = ClientBuilder {
             restriction,
             bandwidth_lim,
             url,
             cookies: Cookies::new(),
             size,
+        };
+
+        loop {
+            let res = builder.clone().connect(target, timeout).await;
+
+            let Err(err) = res else {
+                return res;
+            };
+
+            if let retry::CouldSucceed::No(err) = retry.could_succeed(err) {
+                return Err(err);
+            }
+            retry.ready().await;
         }
-        .connect(target)
-        .await
     }
 }
 
@@ -284,11 +299,12 @@ impl Client {
     pub(crate) async fn try_get_range(
         mut self,
         Range { start, end }: Range<u64>,
+        timeout: Duration,
     ) -> Result<StreamingClient, error::Error> {
         assert!(Some(start) < self.stream_size().known());
 
         let range = format!("bytes={start}-{end}");
-        let response = self.send_range_request(&range).await?;
+        let response = self.send_range_request(&range, timeout).await?;
         let response = ValidResponse::try_from(response)?;
 
         self.size.update(&response);

@@ -76,11 +76,12 @@ impl Reader {
         &mut self,
         target: &mut StreamTarget,
         max: Option<usize>,
+        timeout: Duration,
     ) -> Result<(), Error> {
         if let Reader::PartialData { range, .. } = self {
             target.set_pos(range.start)
         }
-        self.inner().stream_to_writer(target, max).await
+        self.inner().stream_to_writer(target, max, timeout).await
     }
 }
 
@@ -100,6 +101,7 @@ impl InnerReader {
         &mut self,
         output: &mut StreamTarget,
         max: Option<usize>,
+        timeout: Duration,
     ) -> Result<(), Error> {
         let max = max.unwrap_or(usize::MAX);
         let mut n_read = 0usize;
@@ -111,7 +113,7 @@ impl InnerReader {
         while n_read < max {
             // cancel safe: not a problem if a frame is lost as long as
             // we do not mark them as written
-            let Some(data) = get_next_data_frame(&mut self.stream).await? else {
+            let Some(data) = get_next_data_frame(&mut self.stream, timeout).await? else {
                 return Ok(());
             };
 
@@ -157,11 +159,11 @@ impl InnerReader {
 }
 
 #[tracing::instrument(level = "debug", err)]
-async fn get_next_data_frame(stream: &mut Incoming) -> Result<Option<Bytes>, Error> {
+async fn get_next_data_frame(stream: &mut Incoming, timeout: Duration) -> Result<Option<Bytes>, Error> {
     loop {
         let Some(frame) = stream
             .frame()
-            .with_timeout(Duration::from_secs(2))
+            .with_timeout(timeout)
             .await
             .map_err(error::ReadingBody::timed_out)?
         else {

@@ -1,6 +1,7 @@
 use std::num::NonZeroUsize;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 
 use futures::{pin_mut, FutureExt};
 use futures_concurrency::future::Race;
@@ -13,6 +14,7 @@ use crate::network::{Bandwidth, BandwidthAllowed, BandwidthLim, Network};
 use crate::store;
 use crate::{manager, StreamDone, StreamId};
 
+use super::retry::{RetryDurLimit, RetryLimit};
 use super::{task, Error, Handle, ManagedHandle, StreamEnded};
 
 #[derive(Debug)]
@@ -30,7 +32,10 @@ pub struct StreamBuilder<const STORAGE_SET: bool> {
     restriction: Option<Network>,
     start_paused: bool,
     bandwidth: BandwidthAllowed,
-    max_retries: Option<usize>,
+    retry_disabled: bool,
+    max_retries: RetryLimit,
+    max_retry_dur: RetryDurLimit,
+    timeout: Duration,
 }
 
 impl StreamBuilder<false> {
@@ -42,7 +47,10 @@ impl StreamBuilder<false> {
             restriction: None,
             start_paused: false,
             bandwidth: BandwidthAllowed::UnLimited,
-            max_retries: None,
+            retry_disabled: false,
+            max_retries: RetryLimit::Unlimited,
+            max_retry_dur: RetryDurLimit::Unlimited,
+            timeout: Duration::from_secs(2),
         }
     }
 }
@@ -57,7 +65,10 @@ impl StreamBuilder<false> {
             restriction: self.restriction,
             start_paused: self.start_paused,
             bandwidth: self.bandwidth,
+            retry_disabled: self.retry_disabled,
             max_retries: self.max_retries,
+            max_retry_dur: self.max_retry_dur,
+            timeout: self.timeout,
         }
     }
     pub fn to_limited_mem(mut self, max_size: NonZeroUsize) -> StreamBuilder<true> {
@@ -69,7 +80,10 @@ impl StreamBuilder<false> {
             restriction: self.restriction,
             start_paused: self.start_paused,
             bandwidth: self.bandwidth,
+            retry_disabled: self.retry_disabled,
             max_retries: self.max_retries,
+            max_retry_dur: self.max_retry_dur,
+            timeout: self.timeout,
         }
     }
     pub fn to_disk(mut self, path: PathBuf) -> StreamBuilder<true> {
@@ -81,31 +95,68 @@ impl StreamBuilder<false> {
             restriction: self.restriction,
             start_paused: self.start_paused,
             bandwidth: self.bandwidth,
+            retry_disabled: self.retry_disabled,
             max_retries: self.max_retries,
+            max_retry_dur: self.max_retry_dur,
+            timeout: self.timeout,
         }
     }
 }
 
 impl<const STORAGE_SET: bool> StreamBuilder<STORAGE_SET> {
+    /// Default is false
     pub fn start_paused(mut self, start_paused: bool) -> Self {
         self.start_paused = start_paused;
         self
     }
-    /// default is 10_000 bytes
+    /// Default is 10_000 bytes
     pub fn with_prefetch(mut self, prefetch: usize) -> Self {
         self.initial_prefetch = prefetch;
         self
     }
+    /// By default all networks are allowed
     pub fn with_network_restriction(mut self, allowed_network: Network) -> Self {
         self.restriction = Some(allowed_network);
         self
     }
+    /// By default there is no bandwidth limit
     pub fn with_bandwidth_limit(mut self, bandwidth: Bandwidth) -> Self {
         self.bandwidth = BandwidthAllowed::Limited(bandwidth);
         self
     }
-    pub fn with_max_retries(mut self, max_retries: usize) -> Self {
-        self.max_retries = Some(max_retries);
+    /// Default is false
+    pub fn retry_disabled(mut self, retry_disabled: bool) -> Self {
+        self.retry_disabled = retry_disabled;
+        self
+    }
+    /// How often the **same error** may happen without an error free window 
+    /// before giving up and returning an error to the user.
+    ///
+    /// If this number is passed the stream is aborted and an error 
+    /// returned to the user.
+    ///
+    /// By default this period is unbounded (infinite)
+    pub fn with_max_retries(mut self, n: usize) -> Self {
+        self.max_retries = RetryLimit::new(n);
+        self
+    }
+    /// How long the **same error** may keep happening without some error 
+    /// free time in between.
+    ///
+    /// If this duration is passed the stream is aborted and an error 
+    /// returned to the user.
+    ///
+    /// By default this period is unbounded (infinite)
+    pub fn with_max_retry_duration(mut self, duration: Duration) -> Self {
+        self.max_retry_dur = RetryDurLimit::new(duration);
+        self
+    }
+
+    /// How long an operation may hang before we abort it
+    ///
+    /// By default this is 2 seconds
+    pub fn with_timeout(mut self, duration: Duration) -> Self {
+        self.timeout = duration;
         self
     }
 }
@@ -170,6 +221,12 @@ impl StreamBuilder<true> {
             handle.pause().await;
         }
 
+        let retry = if self.retry_disabled {
+            task::retry::Decider::disabled()
+        } else {
+            task::retry::Decider::with_limits(self.max_retries, self.max_retry_dur)
+        };
+
         let stream_task = task::new(
             self.url,
             store_writer,
@@ -177,7 +234,8 @@ impl StreamBuilder<true> {
             self.restriction,
             bandwidth_lim,
             stream_size,
-            self.max_retries,
+            retry,
+            self.timeout
         );
         let stream_task = pausable(stream_task, pause_rx);
         Ok((handle, stream_task))

@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use crate::http_client::RangeRefused;
 use crate::http_client::RangeSupported;
 use crate::http_client::Size;
@@ -17,7 +19,7 @@ use super::Error;
 use futures_concurrency::future::Race;
 
 mod race_results;
-mod retry;
+pub(crate) mod retry;
 use race_results::*;
 
 #[derive(Debug)]
@@ -35,16 +37,12 @@ pub(crate) async fn new(
     restriction: Option<Network>,
     bandwidth_lim: BandwidthLim,
     stream_size: Size,
-    max_retries: Option<usize>,
+    mut retry: retry::Decider,
+    timeout: Duration,
 ) -> Result<StreamDone, Error> {
     let start_pos = 0;
     let chunk_size = 1_000;
     let mut target = StreamTarget::new(storage, start_pos, chunk_size);
-    let mut retry = if let Some(max_retries) = max_retries {
-        retry::Decider::with_max_retries(max_retries)
-    } else {
-        retry::Decider::new()
-    };
 
     let mut client = loop {
         let receive_seek = seek_rx.recv().map(Res1::Seek);
@@ -54,6 +52,8 @@ pub(crate) async fn new(
             bandwidth_lim.clone(),
             stream_size.clone(),
             &target,
+            &mut retry,
+            timeout
         )
         .map(Res1::NewClient);
 
@@ -67,7 +67,8 @@ pub(crate) async fn new(
     loop {
         client = match client {
             StreamingClient::RangesSupported(client) => {
-                let res = stream_ranges(client, &mut target, &mut seek_rx, &mut retry).await;
+                let res =
+                    stream_ranges(client, &mut target, &mut seek_rx, &mut retry, timeout).await;
                 match res {
                     RangeRes::Done => return Ok(StreamDone::DownloadedAll),
                     RangeRes::Canceld => return Ok(StreamDone::Canceld),
@@ -76,7 +77,16 @@ pub(crate) async fn new(
                 }
             }
             StreamingClient::RangesRefused(client) => {
-                match stream_all(client, &stream_size, &mut seek_rx, &mut target).await {
+                match stream_all(
+                    client,
+                    &stream_size,
+                    &mut seek_rx,
+                    &mut target,
+                    &mut retry,
+                    timeout,
+                )
+                .await
+                {
                     AllRes::Error(e) => return Err(e),
                     AllRes::StreamDone(reason) => return Ok(reason),
                     AllRes::SeekPerformed(new_client) => new_client,
@@ -97,11 +107,15 @@ async fn stream_all(
     stream_size: &Size,
     seek_rx: &mut mpsc::Receiver<u64>,
     target: &mut StreamTarget,
+    retry: &mut retry::Decider,
+    timeout: Duration,
 ) -> AllRes {
     let builder = client_without_range.builder();
     let receive_seek = seek_rx.recv().map(Res2::Seek);
     let mut reader = client_without_range.into_reader();
-    let write = reader.stream_to_writer(target, None).map(Res2::Write);
+    let write = reader
+        .stream_to_writer(target, None, timeout)
+        .map(Res2::Write);
 
     let pos = match (write, receive_seek).race().await {
         Res2::Seek(Some(pos)) => pos,
@@ -121,9 +135,15 @@ async fn stream_all(
     // do not concurrently wait for seeks, since we probably wont
     // get range support so any seek would translate to starting the stream
     // again. Which is wat we are doing here.
-    let client = match builder.connect(&target).await {
-        Err(e) => return AllRes::Error(Error::HttpClient(e)),
-        Ok(client) => client,
+    let client = loop {
+        let err = match builder.clone().connect(&target, timeout).await {
+            Ok(client) => break client,
+            Err(err) => err,
+        };
+        match retry.could_succeed(err) {
+            retry::CouldSucceed::Yes => retry.ready().await,
+            retry::CouldSucceed::No(e) => return AllRes::Error(Error::HttpClient(e)),
+        };
     };
     target.set_pos(pos);
     AllRes::SeekPerformed(client)
@@ -143,12 +163,13 @@ async fn stream_ranges(
     target: &mut StreamTarget,
     seek_rx: &mut mpsc::Receiver<u64>,
     retry: &mut retry::Decider,
+    timeout: Duration,
 ) -> RangeRes {
     loop {
         let client_builder = client.builder();
 
         let next_pos = loop {
-            let stream = process_one_stream(client, target).map(Into::into);
+            let stream = process_one_stream(client, target, timeout).map(Into::into);
             let get_seek = seek_rx.recv().map(Res3::Seek);
             client = match (stream, get_seek).race().await {
                 Res3::Seek(None) => return RangeRes::Canceld,
@@ -165,7 +186,7 @@ async fn stream_ranges(
                         break None;
                     }
                     retry::CouldSucceed::No(e) => {
-                        return RangeRes::Err(e);
+                        return RangeRes::Err(Error::HttpClient(e));
                     }
                 },
                 Res3::StreamError(unrecoverable_err) => {
@@ -180,7 +201,7 @@ async fn stream_ranges(
 
         client = loop {
             let get_seek = seek_rx.recv().map(Res4::Seek);
-            let get_client_at_new_pos = client_builder.clone().connect(target).map(Into::into);
+            let get_client_at_new_pos = client_builder.clone().connect(target, timeout).map(Into::into);
 
             match (get_client_at_new_pos, get_seek).race().await {
                 Res4::Seek(None) => return RangeRes::Canceld,
@@ -197,11 +218,12 @@ async fn stream_ranges(
 async fn process_one_stream(
     client: RangeSupported,
     target: &mut StreamTarget,
+    timeout: Duration,
 ) -> Result<Option<StreamingClient>, Error> {
     let mut reader = client.into_reader();
     let max_to_stream = target.chunk_size as usize;
     reader
-        .stream_to_writer(target, Some(max_to_stream))
+        .stream_to_writer(target, Some(max_to_stream), timeout)
         .await
         .map_err(Error::HttpClient)?;
 
@@ -213,7 +235,7 @@ async fn process_one_stream(
     let res = reader
         .try_into_client()
         .expect("should not read less then we requested")
-        .try_get_range(next_range)
+        .try_get_range(next_range, timeout)
         .await;
 
     match res {

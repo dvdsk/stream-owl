@@ -20,7 +20,8 @@ Features:
  - Recovers download progress
  - Limit the bandwidth used
  - Prioritize one stream over another
- - Handles server errors and disconnects without disturbing the reader
+ - Handles network or server errors and timeouts without disturbing the reader
+ - Get updates on stream speed and progress
 
 ## License options
 This work is available under the Gnu Public License (version 3). For other licenses please contact me.

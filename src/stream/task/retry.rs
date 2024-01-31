@@ -3,7 +3,7 @@ use std::time::{Duration, Instant};
 use crate::http_client::Error;
 use derivative::Derivative;
 use http::StatusCode;
-use tracing::{debug, instrument, warn};
+use tracing::{debug, instrument, trace, warn};
 
 #[derive(Derivative)]
 #[derivative(Debug)]
@@ -18,24 +18,16 @@ struct Event {
 }
 
 impl Event {
-    fn retry_period(&self) -> Duration {
-        match self.approach {
-            Backoff::Constant(d) => d,
-            Backoff::Fibonacci {
-                last,
-                before_last,
-                max,
-            } => max.min(last + before_last),
-        }
-    }
-
     fn next_try_in(&mut self) -> Duration {
         let since_last_try = self.last_occurrence.elapsed();
-        self.retry_period().saturating_sub(since_last_try)
+        self.approach
+            .curr_retry_dur()
+            .saturating_sub(since_last_try)
     }
 
     fn update(&mut self) {
         self.last_occurrence = Instant::now();
+        self.n_occurred += 1;
         match self.approach {
             Backoff::Constant(_) => todo!(),
             Backoff::Fibonacci {
@@ -59,12 +51,6 @@ fn fmt_at_field(
 }
 
 #[derive(Debug)]
-pub(super) struct Decider {
-    recent: Vec<Event>,
-    max_retries: usize,
-}
-
-#[derive(Debug)]
 enum Backoff {
     Constant(Duration),
     Fibonacci {
@@ -82,32 +68,105 @@ impl Backoff {
             max,
         }
     }
+    fn max_retry_dur(&self) -> Duration {
+        match self {
+            Backoff::Constant(d) => *d,
+            Backoff::Fibonacci { max, .. } => *max,
+        }
+    }
+    fn curr_retry_dur(&self) -> Duration {
+        match self {
+            Backoff::Constant(d) => *d,
+            Backoff::Fibonacci {
+                last,
+                before_last,
+                max,
+            } => (*max).min(*last + *before_last),
+        }
+    }
 }
 
-pub(super) enum CouldSucceed {
+pub(crate) enum CouldSucceed {
     Yes,
-    No(super::Error),
+    No(Error),
+}
+
+macro_rules! limit_type {
+    ($name:ident: $type:ty, $forbidden:expr, $max:expr) => {
+        #[derive(Debug)]
+        pub(crate) enum $name {
+            Unlimited,
+            Limited($type),
+        }
+
+        impl $name {
+            pub fn new(val: $type) -> Self {
+                if val == $forbidden {
+                    panic!("Can not be {:?}", $forbidden);
+                }
+
+                if val == $max {
+                    Self::Unlimited
+                } else {
+                    Self::Limited(val)
+                }
+            }
+        }
+
+        impl Default for $name {
+            fn default() -> Self {
+                Self::Unlimited
+            }
+        }
+    };
+}
+
+limit_type!(RetryLimit: usize, 0, usize::MAX);
+limit_type!(RetryDurLimit: Duration, Duration::ZERO, Duration::MAX);
+
+#[derive(Debug)]
+pub(crate) struct Decider {
+    recent: Vec<Event>,
+    retry_disabled: bool,
+    /// how often the **same error** may happen before we give up
+    retry_limit: RetryLimit,
+    /// how long the **same error** may happen before we give up
+    max_retry_dur: RetryDurLimit,
 }
 
 impl Decider {
-    pub(crate) fn new() -> Self {
+    pub(crate) fn with_limits(max_retries: RetryLimit, max_retry_dur: RetryDurLimit) -> Self {
         Self {
+            retry_disabled: false,
             recent: Vec::new(),
-            max_retries: usize::MAX,
+            retry_limit: max_retries,
+            max_retry_dur,
         }
     }
-    pub(crate) fn with_max_retries(n: usize) -> Self {
+
+    pub(crate) fn disabled() -> Self {
         Self {
+            retry_disabled: true,
             recent: Vec::new(),
-            max_retries: n,
+            retry_limit: RetryLimit::default(),
+            max_retry_dur: RetryDurLimit::default(),
         }
     }
 
     fn n_occurred(&self, error: &Error) -> usize {
         self.recent
             .iter()
-            .filter(|event| event.error == *error)
-            .count()
+            .find(|event| event.error == *error)
+            .map(|event| event.n_occurred)
+            .unwrap_or(0)
+    }
+
+    fn since_first_occurred(&self, error: &Error) -> Duration {
+        self.recent
+            .iter()
+            .find(|event| event.error == *error)
+            .map(|event| event.original_error.elapsed())
+            .unwrap_or(Duration::ZERO)
     }
 
     fn remove_stale_entries(&mut self) {
@@ -115,12 +174,15 @@ impl Decider {
             .recent
             .iter()
             .enumerate()
-            .filter(|(_, event)| event.last_occurrence.elapsed() > 5 * event.retry_period())
+            .filter(|(_, event)| {
+                event.last_occurrence.elapsed() > 5 * event.approach.max_retry_dur()
+            })
             .map(|(idx, _)| idx)
             .collect();
 
         for idx in to_remove.into_iter().rev() {
-            self.recent.remove(idx);
+            let removed = self.recent.remove(idx);
+            trace!("removed old error: {removed:?}");
         }
     }
 
@@ -144,8 +206,32 @@ impl Decider {
         }
     }
 
+    #[instrument(level = "debug")]
+    fn register_or_reject(&mut self, err: Error, approach: Backoff) -> CouldSucceed {
+        match self.retry_limit {
+            RetryLimit::Limited(allowed) if self.n_occurred(&err) >= allowed => {
+                return CouldSucceed::No(err)
+            }
+            _ => (),
+        }
+
+        match self.max_retry_dur {
+            RetryDurLimit::Limited(allowed) if self.since_first_occurred(&err) >= allowed => {
+                return CouldSucceed::No(err)
+            }
+            _ => (),
+        }
+
+        self.register(err, approach);
+        CouldSucceed::Yes
+    }
+
     #[instrument(level = "debug", skip(self))]
     pub fn could_succeed(&mut self, err: Error) -> CouldSucceed {
+        if self.retry_disabled {
+            return CouldSucceed::No(err);
+        }
+
         use Error as E;
         const MAX_RETY_INTERVAL: Duration = Duration::from_secs(5 * 60);
         const RETRY_FAST: Duration = Duration::from_millis(200);
@@ -153,20 +239,14 @@ impl Decider {
 
         match err {
             E::SocketCreation(_) | E::SocketConfig(_) => {
-                self.register(err, Backoff::Constant(RETRY_SLOW));
-                CouldSucceed::Yes
+                self.register_or_reject(err, Backoff::Constant(RETRY_SLOW))
             }
             E::Connecting(_)
             | E::DnsResolve(_)
             | E::SendingRequest(_)
             | E::Handshake(_)
             | E::ReadingBody(_) => {
-                if self.n_occurred(&err) > self.max_retries {
-                    CouldSucceed::No(super::Error::HttpClient(err))
-                } else {
-                    self.register(err, Backoff::fib(RETRY_FAST, MAX_RETY_INTERVAL));
-                    CouldSucceed::Yes
-                }
+                self.register_or_reject(err, Backoff::fib(RETRY_FAST, MAX_RETY_INTERVAL))
             }
             E::StatusNotOk {
                 code:
@@ -174,14 +254,7 @@ impl Decider {
                     | StatusCode::SERVICE_UNAVAILABLE
                     | StatusCode::GATEWAY_TIMEOUT,
                 ..
-            } => {
-                if self.n_occurred(&err) > self.max_retries {
-                    CouldSucceed::No(super::Error::HttpClient(err))
-                } else {
-                    self.register(err, Backoff::fib(RETRY_SLOW, MAX_RETY_INTERVAL));
-                    CouldSucceed::Yes
-                }
-            }
+            } => self.register_or_reject(err, Backoff::fib(RETRY_SLOW, MAX_RETY_INTERVAL)),
 
             E::Response(_) | E::WritingData(_) => todo!(),
             E::Http(_)
@@ -194,7 +267,7 @@ impl Decider {
             | E::TooManyRedirects
             | E::MissingFrame
             | E::StatusNotOk { .. }
-            | E::UrlWithoutHost => CouldSucceed::No(super::Error::HttpClient(err)),
+            | E::UrlWithoutHost => CouldSucceed::No(err),
         }
     }
 

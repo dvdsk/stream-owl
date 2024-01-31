@@ -20,6 +20,7 @@ pub use builder::StreamBuilder;
 pub use task::StreamDone;
 mod drop;
 mod task;
+pub(crate) use task::retry;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
