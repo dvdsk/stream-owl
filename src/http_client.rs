@@ -5,7 +5,7 @@ use derivative::Derivative;
 use futures::Future;
 use http::{header, HeaderValue, StatusCode};
 use hyper::body::Incoming;
-use tracing::{debug, info, warn};
+use tracing::{debug, info, warn, instrument};
 
 use crate::network::{BandwidthLim, Network};
 use crate::stream::retry;
@@ -113,6 +113,7 @@ impl RangeRefused {
         }
     }
 
+    #[instrument(level = "trace", skip(self))]
     pub(crate) fn builder(&self) -> ClientBuilder {
         ClientBuilder {
             restriction: self.client.restriction.clone(),
@@ -350,6 +351,7 @@ trait FutureTimeout {
 
 impl<F: Future> FutureTimeout for F {
     type Future = F;
+    #[instrument(level = "trace", skip(self))]
     fn with_timeout(self, dur: Duration) -> tokio::time::Timeout<Self::Future> {
         tokio::time::timeout(dur, self)
     }

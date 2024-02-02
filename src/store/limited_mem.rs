@@ -88,6 +88,7 @@ impl Memory {
     }
 
     /// we must only get here if there is data in the mem store for us
+    #[instrument(skip(self, buf))]
     pub(super) fn read_at(&mut self, buf: &mut [u8], pos: u64) -> usize {
         debug_assert!(pos >= self.range.start, "No data in store at offset: {pos}");
 

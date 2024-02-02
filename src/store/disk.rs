@@ -59,6 +59,7 @@ pub enum OpenError {
 }
 
 impl Disk {
+    #[instrument(skip(range_tx))]
     pub(super) async fn new(
         path: PathBuf,
         range_tx: range_watch::Sender,
@@ -121,6 +122,7 @@ impl Disk {
         Ok(NonZeroUsize::new(written).expect("File should always accept more bytes"))
     }
 
+    #[instrument(level = "trace", skip(self, buf))]
     pub(super) async fn read_at(&mut self, buf: &mut [u8], pos: u64) -> Result<usize, Error> {
         if pos != self.file_pos {
             self.file

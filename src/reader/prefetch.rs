@@ -121,6 +121,7 @@ impl<'a> Prefetching<'a> {
         self.pos += bytes as u64;
     }
 
+    #[instrument(level="trace", skip(self, a))]
     async fn read_into_first(&mut self, a: &mut [u8]) -> Result<(), ReadError> {
         let n_read = 0;
         while n_read <= a.len() && self.still_needed > 0 {
@@ -134,6 +135,7 @@ impl<'a> Prefetching<'a> {
         Ok(())
     }
 
+    #[instrument(level="trace", skip(self, b))]
     async fn read_into_second(&mut self, b: &mut [u8]) -> Result<(), ReadError> {
         let n_read = 0;
         while n_read <= b.len() && self.still_needed > 0 {

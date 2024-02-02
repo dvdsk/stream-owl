@@ -31,6 +31,7 @@ pub struct Reader {
 pub struct CouldNotCreateRuntime(io::Error);
 
 impl Reader {
+    #[instrument(level = "trace", skip(store))]
     pub(crate) fn new(
         prefetch: usize,
         seek_tx: mpsc::Sender<u64>,
@@ -60,6 +61,7 @@ fn stream_ended(_: tokio::sync::mpsc::error::SendError<u64>) -> io::Error {
 }
 
 impl Reader {
+    #[instrument(level = "trace", skip(self))]
     fn absolute_pos(&mut self, rel_pos: io::SeekFrom) -> io::Result<u64> {
         let just_started = self.store.size().requests_analyzed() < 1;
 
@@ -81,6 +83,7 @@ impl Reader {
         })
     }
 
+    #[instrument(level = "trace", skip(self))]
     fn make_client_seek(&mut self, pos: u64, store: &mut OwnedMutexGuard<Store>) -> io::Result<()> {
         self.seek_tx.blocking_send(pos).map_err(stream_ended)?;
         self.last_seek = pos;

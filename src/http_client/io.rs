@@ -91,6 +91,7 @@ impl ThrottlableIo {
 }
 
 impl ThrottlableIo {
+    #[instrument(level="trace", skip(self, cx))]
     fn sleep(self: Pin<&mut Self>, cx: &mut Context<'_>, next_call_allowed: Instant) {
         let this = self.project();
         let fut = tokio::time::sleep_until(next_call_allowed.into());

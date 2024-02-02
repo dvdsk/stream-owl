@@ -233,6 +233,7 @@ impl Handle {
     }
 
     /// Only does something when the store actually supports flush
+    #[tracing::instrument(level = "trace", skip(self))]
     pub async fn flush(&mut self) -> Result<(), Error> {
         self.store
             .lock()

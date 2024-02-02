@@ -119,6 +119,7 @@ impl Size {
         }
     }
 
+    #[tracing::instrument(level = "trace", skip(rt, self))]
     pub(crate) fn wait_for_known(
         &self,
         rt: &mut Runtime,
@@ -146,6 +147,7 @@ impl Size {
         }
     }
 
+    #[tracing::instrument(level = "trace", skip(self))]
     pub(crate) async fn eof_smaller_then(&self, pos: u64) {
         loop {
             let curr = self.get();

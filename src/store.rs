@@ -197,6 +197,7 @@ impl Store {
             Self::MemUnlimited(_) => StoreVariant::MemUnlimited,
         }
     }
+    #[tracing::instrument(level = "trace", skip(self))]
     pub(crate) async fn flush(&mut self) -> Result<(), Error> {
         if let Store::Disk(disk_store) = self {
             disk_store.flush().await.map_err(Error::Disk)

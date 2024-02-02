@@ -52,6 +52,7 @@ impl RangeStore {
         Ok(())
     }
 
+    #[instrument(skip(self, buf))]
     pub(crate) fn copy_at(&self, pos: u64, buf: &mut [u8]) -> usize {
         let Some(entry) = self.buffers.iter().find(|e| e.range().contains(&pos)) else {
             return 0;

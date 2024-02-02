@@ -283,6 +283,7 @@ impl Decider {
         }
     }
 
+    #[tracing::instrument(level = "trace", skip(self))]
     pub async fn ready(&mut self) {
         if let Some(until_next_try) = self.recent.iter_mut().map(Event::next_try_in).max() {
             debug!("retrying in {} ms", until_next_try.as_millis());
