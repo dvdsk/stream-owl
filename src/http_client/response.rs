@@ -25,7 +25,7 @@ pub(crate) enum ValidResponse {
     },
 }
 
-#[derive(Debug, thiserror::Error, PartialEq)]
+#[derive(Debug, Clone, thiserror::Error, PartialEq)]
 pub enum Error {
     #[error("Response with status PARTIAL_CONTENT had an incorrect header: {0}")]
     InvalidPartialContentHeader(headers::Error),

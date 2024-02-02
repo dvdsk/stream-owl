@@ -15,6 +15,9 @@ edition = "2021"
 # and we don't rely on it for debugging that much.
 debug = 0
 
+[profile.release]
+debug = true
+
 [dependencies]
 async-trait = "0.1.74"
 bytes = "1.5.0"
@@ -45,3 +48,15 @@ console-subscriber = "0.2.0"
 rand = "0.8"
 axum-macros = "0.4.0"
 governor = "0.6.0"
+opentelemetry = "0.21.0"
+tracing-opentelemetry = "0.22.0"
+opentelemetry_sdk = "0.21.2"
+opentelemetry-jaeger = { version = "0.20.0", features = ["rt-tokio", "isahc_collector_client"] }
+
+[dev-dependencies]
+criterion = { version = "0.4", features = ["html_reports"] }
+tracing-flame = "0.2"
+
+[[bench]]
+name = "stream_bench"
+harness = false

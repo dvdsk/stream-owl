@@ -1,19 +1,19 @@
 use std::io;
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::task::Poll;
 
 use pin_project_lite::pin_project;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::TcpStream;
-use tracing::{info, instrument};
+use tracing::{instrument, warn};
 
 /// how many bytes after the previous disconnect to force another
 type DisconnAt = u64;
 #[derive(Debug, Clone)]
 pub struct ConnControls {
     disconn_at: Arc<[DisconnAt]>,
-    next: usize,
+    next: Arc<AtomicUsize>,
     wrote: u64,
 }
 
@@ -25,27 +25,38 @@ enum Should {
 }
 
 impl ConnControls {
-    pub fn new(disconn_offsets: Vec<DisconnAt>) -> Self {
+    pub fn new(relative_to_start: Vec<DisconnAt>) -> Self {
+        let mut prev = 0;
+        let relative_to_last_disconn: Vec<DisconnAt> = relative_to_start
+            .into_iter()
+            .map(|point| {
+                let new = point - prev;
+                prev = point;
+                new
+            })
+            .collect();
+
         Self {
-            disconn_at: disconn_offsets.into_boxed_slice().into(),
-            next: 1,
+            disconn_at: relative_to_last_disconn.into_boxed_slice().into(),
+            next: Arc::new(AtomicUsize::new(0)),
             wrote: 0,
         }
     }
 
     #[instrument(level = "trace")]
     fn should_disconn(&mut self, to_write: usize) -> Should {
-        let Some(next_disconn) = self.disconn_at.get(self.next).copied() else {
+        let next = self.next.load(Ordering::Relaxed);
+        let Some(next_disconn) = self.disconn_at.get(next).copied() else {
             return Should::DoNothing;
         };
 
         if self.wrote >= next_disconn {
-            self.next += 1;
-            info!("will disconnect");
+            self.next.fetch_add(1, Ordering::Relaxed);
+            warn!("disconnecting at: {}", self.wrote);
             Should::Disconn
         } else if self.wrote + to_write as u64 >= next_disconn {
             let allowed_len = next_disconn - self.wrote;
-            info!("will disconnect at next request, cutting body to: {allowed_len}");
+            warn!("will disconnect at next request, cutting body to: {allowed_len}");
             Should::Cut(allowed_len as usize)
         } else {
             Should::DoNothing

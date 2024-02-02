@@ -1,14 +1,21 @@
 use std::fmt::Display;
 use std::num::ParseIntError;
 use std::ops::Range;
+use std::sync::Arc;
 
 use axum::response::Response;
 use http::header;
 
 /// wrapper around [`http::header::ToStrError`] providing a slow [`PartialEq`]
 /// implementation
-#[derive(Debug)]
-pub struct NotUtf8(http::header::ToStrError);
+#[derive(Debug, Clone)]
+pub struct NotUtf8(Arc<http::header::ToStrError>);
+
+impl NotUtf8 {
+    fn wrap(error: http::header::ToStrError) -> Error {
+        Error::NotUtf8(Self(Arc::new(error)))
+    }
+}
 
 impl PartialEq for NotUtf8 {
     fn eq(&self, other: &Self) -> bool {
@@ -22,7 +29,7 @@ impl Display for NotUtf8 {
     }
 }
 
-#[derive(Debug, thiserror::Error, PartialEq)]
+#[derive(Debug, Clone, thiserror::Error, PartialEq)]
 pub enum Error {
     #[error("Header is not a utf8 string: {0}")]
     NotUtf8(NotUtf8),
@@ -51,8 +58,7 @@ pub fn content_length<T>(response: &Response<T>) -> Result<Option<u64>, Error> {
         .map(|header| {
             header
                 .to_str()
-                .map_err(NotUtf8)
-                .map_err(Error::NotUtf8)?
+                .map_err(NotUtf8::wrap)?
                 .parse()
                 .map_err(Error::ContentLengthNotNumber)
         })
@@ -65,8 +71,7 @@ fn range_and_total<T>(response: &Response<T>) -> Result<(&str, &str), Error> {
         .get(header::CONTENT_RANGE)
         .ok_or(Error::MissingContentRange)?
         .to_str()
-        .map_err(NotUtf8)
-        .map_err(Error::NotUtf8)?
+        .map_err(NotUtf8::wrap)?
         .strip_prefix("bytes ")
         .ok_or(Error::RangeNotBytes)?
         .rsplit_once("/")

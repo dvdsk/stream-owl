@@ -1,3 +1,4 @@
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use crate::http_client::Error;
@@ -8,7 +9,7 @@ use tracing::{debug, instrument, trace, warn};
 #[derive(Derivative)]
 #[derivative(Debug)]
 struct Event {
-    error: Error,
+    error: Arc<Error>,
     #[derivative(Debug(format_with = "fmt_at_field"))]
     original_error: Instant,
     #[derivative(Debug(format_with = "fmt_at_field"))]
@@ -124,9 +125,12 @@ macro_rules! limit_type {
 limit_type!(RetryLimit: usize, 0, usize::MAX);
 limit_type!(RetryDurLimit: Duration, Duration::ZERO, Duration::MAX);
 
-#[derive(Debug)]
+#[derive(Derivative)]
+#[derivative(Debug)]
 pub(crate) struct Decider {
     recent: Vec<Event>,
+    #[derivative(Debug = "ignore")]
+    log_to_user: Box<dyn FnMut(Arc<Error>) + Send>,
     retry_disabled: bool,
     /// how often the **same error** may happen before we give up
     retry_limit: RetryLimit,
@@ -135,18 +139,24 @@ pub(crate) struct Decider {
 }
 
 impl Decider {
-    pub(crate) fn with_limits(max_retries: RetryLimit, max_retry_dur: RetryDurLimit) -> Self {
+    pub(crate) fn with_limits(
+        max_retries: RetryLimit,
+        max_retry_dur: RetryDurLimit,
+        log_to_user: Box<dyn FnMut(Arc<Error>) + Send>,
+    ) -> Self {
         Self {
             retry_disabled: false,
             recent: Vec::new(),
+            log_to_user,
             retry_limit: max_retries,
             max_retry_dur,
         }
     }
 
-    pub(crate) fn disabled() -> Self {
+    pub(crate) fn disabled() -> Decider {
         Self {
             retry_disabled: true,
+            log_to_user: Box::new(|_| {}),
             recent: Vec::new(),
             retry_limit: RetryLimit::default(),
             max_retry_dur: RetryDurLimit::default(),
@@ -156,7 +166,7 @@ impl Decider {
     fn n_occurred(&self, error: &Error) -> usize {
         self.recent
             .iter()
-            .find(|event| event.error == *error)
+            .find(|event| event.error.as_ref() == error)
             .map(|event| event.n_occurred)
             .unwrap_or(0)
     }
@@ -164,7 +174,7 @@ impl Decider {
     fn since_first_occurred(&self, error: &Error) -> Duration {
         self.recent
             .iter()
-            .find(|event| event.error == *error)
+            .find(|event| event.error.as_ref() == error)
             .map(|event| event.original_error.elapsed())
             .unwrap_or(Duration::ZERO)
     }
@@ -187,7 +197,7 @@ impl Decider {
     }
 
     #[instrument(level = "debug")]
-    fn register(&mut self, error: Error, approach: Backoff) {
+    fn register(&mut self, error: Arc<Error>, approach: Backoff) {
         self.remove_stale_entries();
 
         let existing = self.recent.iter_mut().find(|event| event.error == error);
@@ -222,7 +232,9 @@ impl Decider {
             _ => (),
         }
 
-        self.register(err, approach);
+        let error = Arc::new(err);
+        (self.log_to_user)(error.clone());
+        self.register(error, approach);
         CouldSucceed::Yes
     }
 

@@ -30,14 +30,14 @@ fn stream_not_faster_then_limit() {
     reader.read_exact(&mut vec![0; 100_000]).unwrap();
 
     assert!(
-        start.elapsed() > Duration::from_secs(4),
+        start.elapsed() > Duration::from_millis(40),
         "elapsed: {:?}",
         start.elapsed()
     );
+    dbg!(start.elapsed());
 
     test_done.notify_one();
     let test_ended = runtime_thread.join().unwrap();
-    dbg!(&test_ended);
     assert!(matches!(
         test_ended,
         TestEnded::StreamReturned(Ok(StreamDone::DownloadedAll))

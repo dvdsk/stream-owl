@@ -3,13 +3,14 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
+use derivative::Derivative;
 use futures::{pin_mut, FutureExt};
 use futures_concurrency::future::Race;
 use std::future::Future;
 use tokio::sync::{mpsc, Mutex};
 use tracing::debug;
 
-use crate::http_client::Size;
+use crate::http_client::{self, Size};
 use crate::network::{Bandwidth, BandwidthAllowed, BandwidthLim, Network};
 use crate::store;
 use crate::{manager, StreamDone, StreamId};
@@ -24,7 +25,8 @@ enum StorageChoice {
     MemUnlimited,
 }
 
-#[derive(Debug)]
+#[derive(Derivative)]
+#[derivative(Debug)]
 pub struct StreamBuilder<const STORAGE_SET: bool> {
     url: http::Uri,
     storage: Option<StorageChoice>,
@@ -35,7 +37,20 @@ pub struct StreamBuilder<const STORAGE_SET: bool> {
     retry_disabled: bool,
     max_retries: RetryLimit,
     max_retry_dur: RetryDurLimit,
+    #[derivative(Debug(format_with = "fmt_retry_logger"))]
+    retry_logger: Option<Box<dyn FnMut(Arc<http_client::Error>) + Send>>,
     timeout: Duration,
+}
+
+fn fmt_retry_logger<T>(
+    retry_logger: &Option<T>,
+    fmt: &mut std::fmt::Formatter,
+) -> std::result::Result<(), std::fmt::Error> {
+    if retry_logger.is_some() {
+        fmt.write_str("Some(-not printable-)")
+    } else {
+        fmt.write_str("None")
+    }
 }
 
 impl StreamBuilder<false> {
@@ -50,6 +65,7 @@ impl StreamBuilder<false> {
             retry_disabled: false,
             max_retries: RetryLimit::Unlimited,
             max_retry_dur: RetryDurLimit::Unlimited,
+            retry_logger: None,
             timeout: Duration::from_secs(2),
         }
     }
@@ -68,6 +84,7 @@ impl StreamBuilder<false> {
             retry_disabled: self.retry_disabled,
             max_retries: self.max_retries,
             max_retry_dur: self.max_retry_dur,
+            retry_logger: self.retry_logger,
             timeout: self.timeout,
         }
     }
@@ -83,6 +100,7 @@ impl StreamBuilder<false> {
             retry_disabled: self.retry_disabled,
             max_retries: self.max_retries,
             max_retry_dur: self.max_retry_dur,
+            retry_logger: self.retry_logger,
             timeout: self.timeout,
         }
     }
@@ -98,6 +116,7 @@ impl StreamBuilder<false> {
             retry_disabled: self.retry_disabled,
             max_retries: self.max_retries,
             max_retry_dur: self.max_retry_dur,
+            retry_logger: self.retry_logger,
             timeout: self.timeout,
         }
     }
@@ -129,10 +148,10 @@ impl<const STORAGE_SET: bool> StreamBuilder<STORAGE_SET> {
         self.retry_disabled = retry_disabled;
         self
     }
-    /// How often the **same error** may happen without an error free window 
+    /// How often the **same error** may happen without an error free window
     /// before giving up and returning an error to the user.
     ///
-    /// If this number is passed the stream is aborted and an error 
+    /// If this number is passed the stream is aborted and an error
     /// returned to the user.
     ///
     /// By default this period is unbounded (infinite)
@@ -140,15 +159,25 @@ impl<const STORAGE_SET: bool> StreamBuilder<STORAGE_SET> {
         self.max_retries = RetryLimit::new(n);
         self
     }
-    /// How long the **same error** may keep happening without some error 
+    /// How long the **same error** may keep happening without some error
     /// free time in between.
     ///
-    /// If this duration is passed the stream is aborted and an error 
+    /// If this duration is passed the stream is aborted and an error
     /// returned to the user.
     ///
     /// By default this period is unbounded (infinite)
     pub fn with_max_retry_duration(mut self, duration: Duration) -> Self {
         self.max_retry_dur = RetryDurLimit::new(duration);
+        self
+    }
+
+    /// Perform an callback whenever a retry happens. Useful to log
+    /// errors.
+    pub fn with_retry_callback(
+        mut self,
+        logger: impl FnMut(Arc<http_client::Error>) + Send + 'static,
+    ) -> Self {
+        self.retry_logger = Some(Box::new(logger));
         self
     }
 
@@ -224,7 +253,11 @@ impl StreamBuilder<true> {
         let retry = if self.retry_disabled {
             task::retry::Decider::disabled()
         } else {
-            task::retry::Decider::with_limits(self.max_retries, self.max_retry_dur)
+            task::retry::Decider::with_limits(
+                self.max_retries,
+                self.max_retry_dur,
+                self.retry_logger.unwrap_or_else(|| Box::new(|_| {})),
+            )
         };
 
         let stream_task = task::new(
@@ -235,7 +268,7 @@ impl StreamBuilder<true> {
             bandwidth_lim,
             stream_size,
             retry,
-            self.timeout
+            self.timeout,
         );
         let stream_task = pausable(stream_task, pause_rx);
         Ok((handle, stream_task))

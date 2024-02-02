@@ -49,7 +49,6 @@ pub fn setup_reader_test(
     configure: impl FnOnce(StreamBuilder<false>) -> StreamBuilder<true> + Send + 'static,
     server: impl FnOnce(u64) -> (http::Uri, JoinHandle<Result<(), std::io::Error>>) + Send + 'static,
 ) -> (thread::JoinHandle<TestEnded>, StreamHandle) {
-    setup_tracing();
     let (runtime_thread, handle) = {
         let test_done = test_done.clone();
         let (tx, rx) = mpsc::channel();

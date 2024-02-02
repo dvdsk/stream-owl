@@ -295,7 +295,7 @@ impl StreamingClient {
 }
 
 impl Client {
-    #[tracing::instrument(level = "debug", err, ret)]
+    #[tracing::instrument(level = "debug", err)]
     pub(crate) async fn try_get_range(
         mut self,
         Range { start, end }: Range<u64>,

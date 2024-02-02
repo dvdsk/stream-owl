@@ -85,9 +85,12 @@ fn fmt_reader_in_use(
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum GetReaderError {
+    #[error("Can only have one reader at the time, please drop the 
+            existing one before getting a new one")]
     ReaderInUse,
+    #[error("Could not set up a runtime to get a reader in a blocking fashion: {0}")]
     CreationFailed(CouldNotCreateRuntime),
 }
 

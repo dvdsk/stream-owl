@@ -1,11 +1,11 @@
 use http::Uri;
 use std::io::Read;
 use std::net::SocketAddr;
-use std::sync::Arc;
+use std::sync::{mpsc, Arc};
 use std::thread;
 use std::time::Duration;
 use stream_owl::testing::{ServerControls, TestEnded};
-use stream_owl::{testing, StreamBuilder, StreamDone};
+use stream_owl::{http_client, testing, StreamBuilder, StreamDone};
 use testing::ConnControls;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::sync::Notify;
@@ -14,8 +14,14 @@ use tracing::info;
 
 #[test]
 fn conn_drops_spaced_out() {
+    let (retry_tx, retry_rx) = mpsc::channel();
     let configure = {
-        move |b: StreamBuilder<false>| b.with_prefetch(0).to_unlimited_mem().with_max_retries(3)
+        move |b: StreamBuilder<false>| {
+            b.with_prefetch(0)
+                .to_unlimited_mem()
+                .with_max_retries(3)
+                .with_retry_callback(move |e| retry_tx.send(e).unwrap())
+        }
     };
 
     let disconn_at = vec![3000, 5000, 8000];
@@ -43,6 +49,12 @@ fn conn_drops_spaced_out() {
     use StreamDone::DownloadedAll;
     use TestEnded::{StreamReturned, TestDone};
     let test_ended = runtime_thread.join().unwrap();
+    let errors_retried: Vec<_> = retry_rx.iter().collect();
+
+    assert!(errors_retried.len() == 3);
+    assert!(errors_retried
+        .iter()
+        .all(|err| matches!(err.as_ref(), &http_client::Error::ReadingBody(_))));
     match test_ended {
         TestDone | StreamReturned(Ok(DownloadedAll)) => (),
         other => panic!("runtime should return with TestDone, it returned with {other:?}"),

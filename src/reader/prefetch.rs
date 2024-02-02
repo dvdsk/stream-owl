@@ -62,7 +62,7 @@ impl Prefetch {
     }
 
     /// if needed do some prefetching
-    #[instrument(level = "debug", ret)]
+    #[instrument(level = "debug")]
     pub(crate) async fn perform_if_needed(
         &mut self,
         store: &mut StoreReader,

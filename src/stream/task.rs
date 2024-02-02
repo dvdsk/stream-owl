@@ -214,7 +214,7 @@ async fn stream_ranges(
     }
 }
 
-#[instrument(level = "debug", skip_all, ret)]
+#[instrument(level = "debug", skip_all)]
 async fn process_one_stream(
     client: RangeSupported,
     target: &mut StreamTarget,

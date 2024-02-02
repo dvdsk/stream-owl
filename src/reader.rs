@@ -26,7 +26,8 @@ pub struct Reader {
     curr_pos: u64,
 }
 
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
+#[error(transparent)]
 pub struct CouldNotCreateRuntime(io::Error);
 
 impl Reader {
