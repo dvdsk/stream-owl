@@ -176,7 +176,7 @@ impl ClientBuilder {
     #[tracing::instrument(level = "debug")]
     pub(crate) async fn connect(
         self,
-        target: &StreamTarget,
+        target: &mut StreamTarget,
         timeout: Duration,
     ) -> Result<StreamingClient, error::Error> {
         debug!(
@@ -268,7 +268,7 @@ impl StreamingClient {
         restriction: Option<Network>,
         bandwidth_lim: BandwidthLim,
         size: Size,
-        target: &StreamTarget,
+        target: &mut StreamTarget,
         retry: &mut retry::Decider,
         timeout: Duration,
     ) -> Result<Self, error::Error> {

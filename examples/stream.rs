@@ -12,13 +12,19 @@ fn main() -> Result<(), Box<dyn Error + Send + Sync + 'static>> {
     let tracer = opentelemetry_jaeger::new_agent_pipeline()
         .with_service_name("report_example")
         .install_simple()?;
-        // .install_batch(opentelemetry_sdk::runtime::Tokio)?;
+    // .install_batch(opentelemetry_sdk::runtime::Tokio)?;
     let opentelemetry = tracing_opentelemetry::layer().with_tracer(tracer);
     tracing_subscriber::registry()
         .with(opentelemetry)
         .try_init()?;
 
-    let configure = { move |b: StreamBuilder<false>| b.with_prefetch(0).to_unlimited_mem() };
+    let configure = {
+        move |b: StreamBuilder<false>| {
+            b.with_prefetch(0)
+                .to_unlimited_mem()
+                .with_chunk_size(10_000)
+        }
+    };
 
     let test_done = Arc::new(Notify::new());
     let (_runtime_thread, mut handle) = {

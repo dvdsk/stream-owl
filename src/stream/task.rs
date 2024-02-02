@@ -6,7 +6,6 @@ use crate::http_client::Size;
 use crate::http_client::StreamingClient;
 use crate::network::BandwidthLim;
 use crate::network::Network;
-use crate::store::StoreWriter;
 use crate::target::StreamTarget;
 
 use futures::FutureExt;
@@ -32,7 +31,7 @@ pub enum StreamDone {
 #[instrument(ret, err, skip_all)]
 pub(crate) async fn new(
     url: http::Uri,
-    storage: StoreWriter,
+    mut target: StreamTarget,
     mut seek_rx: mpsc::Receiver<u64>,
     restriction: Option<Network>,
     bandwidth_lim: BandwidthLim,
@@ -40,10 +39,6 @@ pub(crate) async fn new(
     mut retry: retry::Decider,
     timeout: Duration,
 ) -> Result<StreamDone, Error> {
-    let start_pos = 0;
-    let chunk_size = 1_000;
-    let mut target = StreamTarget::new(storage, start_pos, chunk_size);
-
     let mut client = loop {
         let receive_seek = seek_rx.recv().map(Res1::Seek);
         let build_client = StreamingClient::new(
@@ -51,9 +46,9 @@ pub(crate) async fn new(
             restriction.clone(),
             bandwidth_lim.clone(),
             stream_size.clone(),
-            &target,
+            &mut target,
             &mut retry,
-            timeout
+            timeout,
         )
         .map(Res1::NewClient);
 
@@ -136,7 +131,7 @@ async fn stream_all(
     // get range support so any seek would translate to starting the stream
     // again. Which is wat we are doing here.
     let client = loop {
-        let err = match builder.clone().connect(&target, timeout).await {
+        let err = match builder.clone().connect(target, timeout).await {
             Ok(client) => break client,
             Err(err) => err,
         };
@@ -201,7 +196,10 @@ async fn stream_ranges(
 
         client = loop {
             let get_seek = seek_rx.recv().map(Res4::Seek);
-            let get_client_at_new_pos = client_builder.clone().connect(target, timeout).map(Into::into);
+            let get_client_at_new_pos = client_builder
+                .clone()
+                .connect(target, timeout)
+                .map(Into::into);
 
             match (get_client_at_new_pos, get_seek).race().await {
                 Res4::Seek(None) => return RangeRes::Canceld,
@@ -221,7 +219,7 @@ async fn process_one_stream(
     timeout: Duration,
 ) -> Result<Option<StreamingClient>, Error> {
     let mut reader = client.into_reader();
-    let max_to_stream = target.chunk_size as usize;
+    let max_to_stream = target.chunk_size.get();
     reader
         .stream_to_writer(target, Some(max_to_stream), timeout)
         .await

@@ -159,7 +159,10 @@ impl InnerReader {
 }
 
 #[tracing::instrument(level = "debug", err)]
-async fn get_next_data_frame(stream: &mut Incoming, timeout: Duration) -> Result<Option<Bytes>, Error> {
+async fn get_next_data_frame(
+    stream: &mut Incoming,
+    timeout: Duration,
+) -> Result<Option<Bytes>, Error> {
     loop {
         let Some(frame) = stream
             .frame()
@@ -172,8 +175,9 @@ async fn get_next_data_frame(stream: &mut Incoming, timeout: Duration) -> Result
         };
         let frame = frame.map_err(error::ReadingBody::Other)?;
 
-        if let Ok(data) = frame.into_data() {
-            return Ok(Some(data));
+        match frame.into_data() {
+            Ok(data) => return Ok(Some(data)),
+            Err(_not_data) => tracing::trace!("Got non data frame"),
         }
     }
 }

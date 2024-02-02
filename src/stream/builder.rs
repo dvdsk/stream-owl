@@ -13,6 +13,7 @@ use tracing::debug;
 use crate::http_client::{self, Size};
 use crate::network::{Bandwidth, BandwidthAllowed, BandwidthLim, Network};
 use crate::store;
+use crate::target::{ChunkSizeBuilder, StreamTarget};
 use crate::{manager, StreamDone, StreamId};
 
 use super::retry::{RetryDurLimit, RetryLimit};
@@ -31,6 +32,7 @@ pub struct StreamBuilder<const STORAGE_SET: bool> {
     url: http::Uri,
     storage: Option<StorageChoice>,
     initial_prefetch: usize,
+    chunk_size: ChunkSizeBuilder,
     restriction: Option<Network>,
     start_paused: bool,
     bandwidth: BandwidthAllowed,
@@ -59,6 +61,7 @@ impl StreamBuilder<false> {
             url,
             storage: None,
             initial_prefetch: 10_000,
+            chunk_size: ChunkSizeBuilder::new_dynamic(),
             restriction: None,
             start_paused: false,
             bandwidth: BandwidthAllowed::UnLimited,
@@ -78,6 +81,7 @@ impl StreamBuilder<false> {
             url: self.url,
             storage: self.storage,
             initial_prefetch: self.initial_prefetch,
+            chunk_size: self.chunk_size,
             restriction: self.restriction,
             start_paused: self.start_paused,
             bandwidth: self.bandwidth,
@@ -94,6 +98,7 @@ impl StreamBuilder<false> {
             url: self.url,
             storage: self.storage,
             initial_prefetch: self.initial_prefetch,
+            chunk_size: self.chunk_size,
             restriction: self.restriction,
             start_paused: self.start_paused,
             bandwidth: self.bandwidth,
@@ -110,6 +115,7 @@ impl StreamBuilder<false> {
             url: self.url,
             storage: self.storage,
             initial_prefetch: self.initial_prefetch,
+            chunk_size: self.chunk_size,
             restriction: self.restriction,
             start_paused: self.start_paused,
             bandwidth: self.bandwidth,
@@ -131,6 +137,14 @@ impl<const STORAGE_SET: bool> StreamBuilder<STORAGE_SET> {
     /// Default is 10_000 bytes
     pub fn with_prefetch(mut self, prefetch: usize) -> Self {
         self.initial_prefetch = prefetch;
+        self
+    }
+    pub fn with_fixed_chunk_size(mut self, chunk_size: NonZeroUsize) -> Self {
+        self.chunk_size = ChunkSizeBuilder::new_fixed(chunk_size);
+        self
+    }
+    pub fn with_max_dynamic_chunk_size(mut self, max: NonZeroUsize) -> Self {
+        self.chunk_size = ChunkSizeBuilder::new_dynamic_with_max(max);
         self
     }
     /// By default all networks are allowed
@@ -260,9 +274,11 @@ impl StreamBuilder<true> {
             )
         };
 
+        let chunk_size = self.chunk_size.build();
+        let target = StreamTarget::new(store_writer, 0, chunk_size);
         let stream_task = task::new(
             self.url,
-            store_writer,
+            target,
             seek_rx,
             self.restriction,
             bandwidth_lim,
