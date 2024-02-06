@@ -14,7 +14,6 @@ use crate::RangeUpdate;
 
 use self::progress::Progress;
 
-use super::range_watch;
 
 pub mod progress;
 
@@ -59,11 +58,8 @@ pub enum OpenError {
 }
 
 impl Disk {
-    #[instrument(skip(range_tx))]
-    pub(super) async fn new(
-        path: PathBuf,
-        range_tx: range_watch::Sender,
-    ) -> Result<Self, OpenError> {
+    #[instrument]
+    pub(super) async fn new(path: PathBuf) -> Result<(Self, RangeSet<u64>), OpenError> {
         if path.extension() == Some(OsStr::new("progress")) {
             return Err(OpenError::InvalidPath);
         }
@@ -77,16 +73,20 @@ impl Disk {
             .await
             .map_err(OpenError::OpenForWriting)?;
 
-        let progress = Progress::new(path, range_tx, 0)
+        let progress = Progress::new(path, 0)
             .await
             .map_err(OpenError::OpeningProgress)?;
+        let already_downloaded = progress.ranges.clone();
 
-        Ok(Self {
-            file_pos: 0,
-            last_write: 0,
-            file,
-            progress,
-        })
+        Ok((
+            Self {
+                file_pos: 0,
+                last_write: 0,
+                file,
+                progress,
+            },
+            already_downloaded,
+        ))
     }
 
     #[instrument(level = "debug")]

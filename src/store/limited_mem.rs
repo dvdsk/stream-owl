@@ -9,8 +9,6 @@ use rangemap::set::RangeSet;
 use crate::util::{RangeLen, VecDequeExt};
 use crate::RangeUpdate;
 
-use super::range_watch;
-
 #[derive(Derivative)]
 #[derivative(Debug)]
 pub(crate) struct Memory {
@@ -118,16 +116,5 @@ impl Memory {
     }
     pub(super) fn n_supported_ranges(&self) -> usize {
         1
-    }
-    #[instrument(level = "debug", skip(range_tx))]
-    pub(super) fn reset(&mut self, to_pos: u64, range_tx: &mut range_watch::Sender) {
-        /* TODO: see if we can move range_tx out of here <dvdsk> */
-        debug_assert!(!self.range.contains(&to_pos));
-        range_tx.remove(self.range.clone());
-
-        self.buffer.clear();
-        self.free_capacity = self.buffer.capacity();
-        self.range = to_pos..to_pos;
-        self.last_read_pos = to_pos;
     }
 }

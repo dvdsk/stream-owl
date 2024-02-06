@@ -14,6 +14,7 @@ pub enum RangeUpdate {
     Changed { prev: Range<u64>, new: Range<u64> },
     Removed(Range<u64>),
     Added(Range<u64>),
+    StreamClosed,
 }
 
 #[derive(Derivative)]
@@ -46,28 +47,6 @@ pub(super) fn channel(report_tx: ReportTx) -> (Sender, Receiver) {
     )
 }
 
-pub(super) struct PlaceHolder(
-    mpsc::UnboundedReceiver<RangeUpdate>,
-    std::sync::mpsc::Receiver<Report>,
-);
-
-/// Used by migrate as placeholders for the channel connected
-/// to the reader and range callbacks.
-// a better way would be to make the stores generic over
-// whether they are being migrated too or not. However at a 
-// cost of a bit more memory this works fine.
-pub(super) fn placeholder() -> (Sender, PlaceHolder) {
-    let (tx1, rx1) = mpsc::unbounded_channel();
-    let (tx2, rx2) = std::sync::mpsc::channel();
-    (
-        Sender {
-            watch_sender: tx1,
-            report_tx: tx2,
-        },
-        PlaceHolder(rx1, rx2),
-    )
-}
-
 impl Receiver {
     /// blocks till at least one byte is available at `needed_pos`.
     #[instrument(level = "trace")]
@@ -84,6 +63,7 @@ impl Receiver {
                 }
                 RangeUpdate::Removed(range) => self.ranges.remove(range),
                 RangeUpdate::Added(range) => self.ranges.insert(range),
+                RangeUpdate::StreamClosed => break,
             }
         }
     }
@@ -102,25 +82,6 @@ impl Sender {
     }
 
     #[instrument(level = "debug", skip(self))]
-    pub(super) fn add(&self, range: Range<u64>) {
-        assert!(!range.is_empty());
-        self.send(RangeUpdate::Added(range));
-    }
-
-    #[instrument(level = "debug", skip(self))]
-    pub(super) fn remove(&self, range: Range<u64>) {
-        assert!(!range.is_empty());
-        self.send(RangeUpdate::Removed(range));
-    }
-
-    #[instrument(level = "debug", skip(self))]
-    pub(super) fn change(&self, prev: Range<u64>, new: Range<u64>) {
-        assert!(!prev.is_empty());
-        assert!(!new.is_empty());
-        self.send(RangeUpdate::Changed { prev, new });
-    }
-
-    #[instrument(level = "debug", skip(self))]
     pub(super) fn send_diff(&self, mut prev: RangeSet<u64>, new: RangeSet<u64>) {
         tracing::trace!("sending range change: {prev:?}->{new:?}");
         // new is a subset of prev
@@ -132,7 +93,12 @@ impl Sender {
         };
 
         for range in to_remove {
-            self.remove(range)
+            self.send(RangeUpdate::Removed(range))
         }
+    }
+
+    #[instrument(level = "debug", skip(self))]
+    pub(super) fn close(&mut self) {
+        self.send(RangeUpdate::StreamClosed)
     }
 }

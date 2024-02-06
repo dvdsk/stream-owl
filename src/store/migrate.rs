@@ -12,7 +12,7 @@ use super::disk::Disk;
 use super::limited_mem;
 use super::unlimited_mem;
 use super::StoreWriter;
-use super::{range_watch, Store, StoreVariant};
+use super::{Store, StoreVariant};
 use crate::store;
 use crate::util::RangeLen;
 
@@ -50,9 +50,7 @@ pub(crate) async fn to_disk(
         return Ok(());
     }
 
-    // is swapped out before migration finishes
-    let (watch_placeholder, _guard) = range_watch::placeholder();
-    let disk = Disk::new(path, watch_placeholder).await?;
+    let (disk, _) = Disk::new(path).await?;
     migrate(store_writer, Store::Disk(disk)).await
 }
 

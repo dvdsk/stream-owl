@@ -42,6 +42,12 @@ pub(crate) struct StoreWriter {
     range_watch: range_watch::Sender,
 }
 
+impl Drop for StoreWriter {
+    fn drop(&mut self) {
+        self.range_watch.close()
+    }
+}
+
 #[derive(Debug)]
 pub(crate) enum Store {
     Disk(disk::Disk),
@@ -100,7 +106,11 @@ pub(crate) async fn new_disk_backed(
 ) -> Result<(StoreReader, StoreWriter), disk::OpenError> {
     let (capacity_watcher, capacity) = capacity::new();
     let (tx, rx) = range_watch::channel(report_tx);
-    let disk = disk::Disk::new(path, tx.clone()).await?;
+
+    let (disk, already_downloaded) = disk::Disk::new(path).await?;
+    for range in already_downloaded {
+        tx.send(RangeUpdate::Added(range))
+    }
     Ok(store_handles(
         Store::Disk(disk),
         rx,

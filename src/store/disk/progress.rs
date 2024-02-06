@@ -9,7 +9,6 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use rangemap::RangeSet;
 use tracing::{debug, instrument};
 
-use crate::store::range_watch;
 use crate::RangeUpdate;
 
 // TODO make append only + regular cleanup use sys atomic move file
@@ -58,10 +57,9 @@ fn fmt_last_flush(
 type FlushNeeded = bool;
 
 impl Progress {
-    #[instrument(level = "debug", skip(range_tx))]
+    #[instrument(level = "debug")]
     pub(super) async fn new(
         file_path: PathBuf,
-        range_tx: range_watch::Sender,
         start_pos: u64,
     ) -> Result<Progress> {
         let mut file = fs::OpenOptions::new()
@@ -80,10 +78,6 @@ impl Progress {
         let ranges = ranges_from_file_bytes(&buf);
         if !ranges.is_empty() {
             debug!("loaded existing progress from file, sections already downloaded: {ranges:?}");
-        }
-
-        for range in ranges.iter().cloned() {
-            range_tx.add(range);
         }
 
         Ok(Progress {
