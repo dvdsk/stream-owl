@@ -6,7 +6,8 @@ use tracing::{debug, instrument};
 
 use rangemap::set::RangeSet;
 
-use crate::vecdeque::VecDequeExt;
+use crate::util::{RangeLen, VecDequeExt};
+use crate::RangeUpdate;
 
 use super::range_watch;
 

@@ -2,6 +2,7 @@ use rangemap::set::RangeSet;
 use tracing::instrument;
 
 use crate::store::CapacityBounds;
+use crate::util::RangeLen;
 
 use super::super::Store;
 
@@ -34,15 +35,6 @@ pub(crate) fn iter_by_importance(range_list: Vec<Range<u64>>) -> RangeListIterat
     }
 }
 
-pub(crate) trait RangeLen {
-    fn len(&self) -> u64;
-}
-
-impl RangeLen for Range<u64> {
-    fn len(&self) -> u64 {
-        self.end - self.start
-    }
-}
 
 pub(crate) fn correct_for_capacity(
     needed_from_src: Vec<Range<u64>>,
