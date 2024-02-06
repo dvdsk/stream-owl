@@ -165,10 +165,6 @@ impl Disk {
         usize::MAX
     }
 
-    // OPT: see if we can use this to optimize write at
-    // (get rid of the seek check)
-    pub(super) fn writer_jump(&mut self, _to_pos: u64) {}
-
     #[instrument(level = "debug")]
     pub(crate) async fn flush(&mut self) -> Result<(), Error> {
         self.file.flush().await.map_err(Error::FlushingData)?;

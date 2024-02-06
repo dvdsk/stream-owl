@@ -58,9 +58,6 @@ pub(super) enum StoreVariant {
 
 #[derive(thiserror::Error, Debug)]
 pub enum Error {
-    /// Not critical
-    #[error("Refusing write while in the middle of a seek")]
-    SeekInProgress,
     #[error("Could not create limited mem store: {0}")]
     CreatingMemoryLimited(#[from] limited_mem::CouldNotAllocate),
     #[error("Error working with limited mem store: {0}")]
@@ -122,7 +119,7 @@ pub(crate) fn new_limited_mem_backed(
 ) -> Result<(StoreReader, StoreWriter), limited_mem::CouldNotAllocate> {
     let (capacity_watcher, capacity) = capacity::new();
     let (tx, rx) = range_watch::channel(report_tx);
-    let mem = limited_mem::Memory::new(max_cap, tx.clone())?;
+    let mem = limited_mem::Memory::new(max_cap)?;
     Ok(store_handles(
         Store::MemLimited(mem),
         rx,
@@ -153,7 +150,6 @@ pub(crate) fn new_unlimited_mem_backed(
 
 impl StoreWriter {
     #[instrument(level = "trace", skip(self, buf))]
-    /// can rarely return zero bytes
     pub(crate) async fn write_at(&mut self, buf: &[u8], pos: u64) -> Result<NonZeroUsize, Error> {
         self.capacity_watcher.wait_for_space().await;
         // if a migration happens while we are here then we could get
@@ -266,37 +262,10 @@ macro_rules! forward_impl {
     };
 }
 
-macro_rules! forward_impl_mut {
-    ($v:vis $fn_name:ident, $($param:ident: $t:ty),*; $($returns:ty)?) => {
-        impl Store {
-            $v fn $fn_name(&mut self, $($param: $t),*) $(-> $returns)? {
-                match self {
-                    Self::Disk(inner) => inner.$fn_name($($param),*),
-                    Self::MemUnlimited(inner) => inner.$fn_name($($param),*),
-                    Self::MemLimited(inner) => inner.$fn_name($($param),*),
-                }
-            }
-        }
-    };
-
-    ($v:vis async $fn_name:ident, $($param:ident: $t:ty),*; $($returns:ty)?) => {
-        impl Store {
-            $v async fn $fn_name(&mut self, $($param: $t),*) $(-> $returns)? {
-                match self {
-                    Self::Disk(inner) => inner.$fn_name($($param),*).await,
-                    Self::MemUnlimited(inner) => inner.$fn_name($($param),*).await,
-                    Self::MemLimited(inner) => inner.$fn_name($($param),*).await,
-                }
-            }
-        }
-    };
-}
-
 forward_impl!(pub(crate) gapless_from_till, pos: u64, last_seek: u64; bool);
 forward_impl!(pub(crate) ranges,; RangeSet<u64>);
 forward_impl!(last_read_pos,; u64);
 forward_impl!(n_supported_ranges,; usize);
-forward_impl_mut!(pub(crate) writer_jump, to_pos: u64;);
 
 impl Store {
     /// capacity_watch can be left out when migrating as migration
@@ -311,33 +280,31 @@ impl Store {
         match self {
             Store::Disk(inner) => inner.write_at(buf, pos).await.map_err(Error::Disk),
             Store::MemLimited(inner) => {
-                let res = inner.write_at(buf, pos).await.map_err(|e| match e {
-                    limited_mem::SeekInProgress => Error::SeekInProgress,
-                });
+                let res = inner.write_at(buf, pos).await;
                 if inner.free_capacity == 0 {
                     if let Some(capacity_watch) = capacity_watch {
                         capacity_watch.out_of_capacity();
                     }
                 }
-                res
+                Ok(res)
             }
-            Store::MemUnlimited(inner) => inner.write_at(buf, pos).await.map_err(|e| match e {
-                unlimited_mem::Error::SeekInProgress => Error::SeekInProgress,
-                unlimited_mem::Error::CouldNotAllocate(e) => Error::MemoryUnlimited(e),
-            }),
+            Store::MemUnlimited(inner) => inner
+                .write_at(buf, pos)
+                .await
+                .map_err(Error::MemoryUnlimited),
         }
     }
     pub(crate) async fn read_at(
         &mut self,
         buf: &mut [u8],
         pos: u64,
-        max_capacity: Option<&mut CapacityNotifier>,
+        update_capacity: Option<&mut CapacityNotifier>,
     ) -> Result<usize, Error> {
         match self {
             Self::Disk(inner) => inner.read_at(buf, pos).await.map_err(Error::Disk),
             Self::MemLimited(inner) => {
                 let n_read = inner.read_at(buf, pos);
-                if let Some(capacity) = max_capacity {
+                if let Some(capacity) = update_capacity {
                     if inner.free_capacity > 0 {
                         capacity.send_available()
                     }

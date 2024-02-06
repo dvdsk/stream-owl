@@ -2,7 +2,7 @@ use derivative::Derivative;
 use std::collections::TryReserveError;
 use std::num::NonZeroUsize;
 use std::ops::Range;
-use tracing::{debug, instrument};
+use tracing::debug;
 
 use rangemap::set::RangeSet;
 
@@ -19,15 +19,6 @@ pub(crate) struct Memory {
     /// the range currently being added to
     active_range: Range<u64>,
     last_read_pos: u64,
-}
-
-#[derive(thiserror::Error, Debug)]
-pub enum Error {
-    /// Not critical
-    #[error("Refusing write while in the middle of a seek")]
-    SeekInProgress,
-    #[error("Could not get enough memory from the OS")]
-    CouldNotAllocate(#[from] CouldNotAllocate),
 }
 
 // needed in store::Error as SeekInProgress is separated from
@@ -50,11 +41,14 @@ impl Memory {
         &mut self,
         buf: &[u8],
         pos: u64,
-    ) -> Result<(NonZeroUsize, RangeUpdate), Error> {
+    ) -> Result<(NonZeroUsize, RangeUpdate), CouldNotAllocate> {
         assert!(!buf.is_empty());
         if pos != self.active_range.end {
             debug!("refusing write: position not at current range end, seek must be in progress");
-            return Err(Error::SeekInProgress);
+            debug_assert!(!self.active_range.contains(&pos));
+
+            self.active_range = pos..pos;
+            self.last_read_pos = pos;
         }
 
         self.buffer.append_at(pos, buf).map_err(CouldNotAllocate)?;
@@ -93,12 +87,5 @@ impl Memory {
     }
     pub(super) fn n_supported_ranges(&self) -> usize {
         usize::MAX
-    }
-    #[instrument(level = "debug")]
-    pub(super) fn writer_jump(&mut self, to_pos: u64) {
-        debug_assert!(!self.active_range.contains(&to_pos));
-
-        self.active_range = to_pos..to_pos;
-        self.last_read_pos = to_pos;
     }
 }

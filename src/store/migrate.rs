@@ -27,10 +27,7 @@ pub(crate) async fn to_mem(
         return Ok(());
     }
 
-    // is swapped out before migration finishes
-    let (watch_placeholder, _guard) = range_watch::placeholder();
-    let mem = limited_mem::Memory::new(max_cap, watch_placeholder)?;
-
+    let mem = limited_mem::Memory::new(max_cap)?;
     migrate(store_writer, Store::MemLimited(mem)).await
 }
 
@@ -140,7 +137,6 @@ async fn finish_migration(curr: &mut Store, target: &mut Store) -> Result<(), Mi
         };
         let len = missing_on_disk.len().min(4096);
         buf.resize(len as usize, 0u8);
-        // TODO this read should not change the src capacity
         curr.read_at(&mut buf, missing_on_disk.start, None)
             .await
             .map_err(MigrationError::MigrateRead)?;

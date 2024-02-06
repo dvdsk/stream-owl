@@ -19,7 +19,7 @@ macro_rules! tracing_record {
 }
 
 use crate::http_client::Size;
-use crate::store::{self, StoreWriter};
+use crate::store::StoreWriter;
 
 #[derive(Debug)]
 pub(crate) struct StreamTarget {
@@ -114,12 +114,6 @@ impl StreamTarget {
 
             written += match res {
                 Ok(bytes) => bytes.get(),
-                Err(store::Error::SeekInProgress) => {
-                    // this future will be canceld very soon, so just wait here
-                    loop {
-                        futures::pending!();
-                    }
-                }
                 Err(other) => {
                     todo!("handle other error: {other:?}")
                 }

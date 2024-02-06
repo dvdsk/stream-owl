@@ -88,7 +88,6 @@ impl Reader {
         self.seek_tx.blocking_send(pos).map_err(stream_ended)?;
         self.last_seek = pos;
         self.prefetch.reset();
-        store.writer_jump(pos);
         Ok(())
     }
 }
