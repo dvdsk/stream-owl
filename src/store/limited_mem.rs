@@ -64,7 +64,7 @@ impl Memory {
         &mut self,
         data: &[u8],
         pos: u64,
-    ) -> Result<NonZeroUsize, SeekInProgress> {
+    ) -> Result<(NonZeroUsize, RangeUpdate), SeekInProgress> {
         assert!(!data.is_empty());
         if pos != self.range.end {
             debug!("refusing write: position not at current range end, seek must be in progress");
@@ -76,16 +76,22 @@ impl Memory {
         let free_in_buffer = self.buffer_cap.get() - self.buffer.len();
         let to_remove = to_write.saturating_sub(free_in_buffer);
         self.buffer.drain(..to_remove);
-        let removed = to_remove;
+        let removed = self.range.start..self.range.start + (to_remove as u64);
 
         self.buffer.extend(data[0..to_write].iter());
         let written = to_write;
 
         self.free_capacity -= written;
-        self.range.start += removed as u64;
+        self.range.start += removed.len() as u64;
         self.range.end += written as u64;
-        self.range_tx.send(self.range.clone());
-        return Ok(NonZeroUsize::new(to_write).expect("just checked if there is capacity to write"));
+
+        let update = RangeUpdate::Changed {
+            prev: removed,
+            new: self.range.clone(),
+        };
+        let written =
+            NonZeroUsize::new(to_write).expect("just checked if there is capacity to write");
+        Ok((written, update))
     }
 
     /// we must only get here if there is data in the mem store for us
@@ -111,28 +117,20 @@ impl Memory {
         self.range.contains(&pos) && self.range.contains(&last_seek)
     }
 
-    pub(super) fn set_range_tx(&mut self, tx: range_watch::Sender) {
-        self.range_tx = tx;
-    }
-
     pub(super) fn last_read_pos(&self) -> u64 {
         self.last_read_pos
     }
     pub(super) fn n_supported_ranges(&self) -> usize {
         1
     }
-    pub(super) fn into_parts(self) -> range_watch::Sender {
-        let Self { range_tx, .. } = self;
-        range_tx
-    }
     #[instrument(level = "debug")]
     pub(super) fn writer_jump(&mut self, to_pos: u64) {
         debug_assert!(!self.range.contains(&to_pos));
 
+        self.range_tx.remove(self.range.clone());
         self.buffer.clear();
         self.free_capacity = self.buffer.capacity();
         self.range = to_pos..to_pos;
-        self.range_tx.send(to_pos..to_pos);
         self.last_read_pos = to_pos;
     }
 }

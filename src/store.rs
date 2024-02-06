@@ -33,10 +33,13 @@ pub(crate) struct StoreReader {
     stream_size: Size,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Derivative)]
+#[derivative(Debug, Clone)]
 pub(crate) struct StoreWriter {
     pub(crate) curr_store: Arc<Mutex<Store>>,
     pub(crate) capacity_watcher: CapacityWatcher,
+    #[derivative(Debug = "ignore")]
+    range_watch: range_watch::Sender,
 }
 
 #[derive(Debug)]
@@ -87,6 +90,7 @@ fn store_handles(
         StoreWriter {
             curr_store,
             capacity_watcher,
+            range_watch,
         },
     )
 }
@@ -95,15 +99,17 @@ fn store_handles(
 pub(crate) async fn new_disk_backed(
     path: PathBuf,
     stream_size: Size,
+    report_tx: ReportTx,
 ) -> Result<(StoreReader, StoreWriter), disk::OpenError> {
     let (capacity_watcher, capacity) = capacity::new();
-    let (tx, rx) = range_watch::channel();
-    let disk = disk::Disk::new(path, tx).await?;
+    let (tx, rx) = range_watch::channel(report_tx);
+    let disk = disk::Disk::new(path, tx.clone()).await?;
     Ok(store_handles(
         Store::Disk(disk),
         rx,
         capacity,
         capacity_watcher,
+        tx,
         stream_size,
     ))
 }
@@ -112,29 +118,35 @@ pub(crate) async fn new_disk_backed(
 pub(crate) fn new_limited_mem_backed(
     max_cap: NonZeroUsize,
     stream_size: Size,
+    report_tx: ReportTx,
 ) -> Result<(StoreReader, StoreWriter), limited_mem::CouldNotAllocate> {
     let (capacity_watcher, capacity) = capacity::new();
-    let (tx, rx) = range_watch::channel();
-    let mem = limited_mem::Memory::new(max_cap, tx)?;
+    let (tx, rx) = range_watch::channel(report_tx);
+    let mem = limited_mem::Memory::new(max_cap, tx.clone())?;
     Ok(store_handles(
         Store::MemLimited(mem),
         rx,
         capacity,
         capacity_watcher,
+        tx,
         stream_size,
     ))
 }
 
 #[tracing::instrument]
-pub(crate) fn new_unlimited_mem_backed(stream_size: Size) -> (StoreReader, StoreWriter) {
+pub(crate) fn new_unlimited_mem_backed(
+    stream_size: Size,
+    report_tx: ReportTx,
+) -> (StoreReader, StoreWriter) {
     let (capacity_watcher, capacity) = capacity::new();
-    let (tx, rx) = range_watch::channel();
-    let mem = unlimited_mem::Memory::new(tx);
+    let (tx, rx) = range_watch::channel(report_tx);
+    let mem = unlimited_mem::Memory::new();
     store_handles(
         Store::MemUnlimited(mem),
         rx,
         capacity,
         capacity_watcher,
+        tx,
         stream_size,
     )
 }
@@ -147,11 +159,24 @@ impl StoreWriter {
         // if a migration happens while we are here then we could get
         // into store::write_at, without it having free capacity.
         // In that case write_at will return zero (which is fine)
-        self.curr_store
+        let (n_read, range_update) = self
+            .curr_store
             .lock()
             .await
             .write_at(buf, pos, Some(&mut self.capacity_watcher))
-            .await
+            .await?;
+
+        self.range_watch.send(range_update);
+        Ok(n_read)
+    }
+    /// Only does something when the store actually supports flush
+    #[tracing::instrument(level = "trace", skip(self))]
+    pub async fn flush(&mut self) -> Result<(), Error> {
+        self.curr_store.lock().await.flush().await
+    }
+
+    pub async fn variant(&self) -> StoreVariant {
+        self.curr_store.lock().await.variant().await
     }
 }
 
@@ -170,6 +195,11 @@ impl StoreReader {
             stream_size,
             ..
         } = self;
+
+        // There is no race condition between lock and wait_for_range because:
+        //  - a migration will never remove the byte directly after pos
+        //  - a new write can not free up the byte at pos
+        // Thus the write will never return 0 bytes read when it passes wait_for_range.
         let wait_for_range = curr_range.wait_for(pos).map(|_| Res::RangeReady);
         let watch_eof_pos = stream_size.eof_smaller_then(pos).map(|_| Res::PosBeyondEOF);
         let res = (wait_for_range, watch_eof_pos).race().await;
@@ -267,7 +297,6 @@ forward_impl!(pub(crate) ranges,; RangeSet<u64>);
 forward_impl!(last_read_pos,; u64);
 forward_impl!(n_supported_ranges,; usize);
 forward_impl_mut!(pub(crate) writer_jump, to_pos: u64;);
-forward_impl_mut!(set_range_tx, tx: range_watch::Sender;);
 
 impl Store {
     /// capacity_watch can be left out when migrating as migration
@@ -278,7 +307,7 @@ impl Store {
         buf: &[u8],
         pos: u64,
         capacity_watch: Option<&mut CapacityWatcher>,
-    ) -> Result<NonZeroUsize, Error> {
+    ) -> Result<(NonZeroUsize, RangeUpdate), Error> {
         match self {
             Store::Disk(inner) => inner.write_at(buf, pos).await.map_err(Error::Disk),
             Store::MemLimited(inner) => {
@@ -316,14 +345,6 @@ impl Store {
                 Ok(n_read)
             }
             Self::MemUnlimited(inner) => Ok(inner.read_at(buf, pos)),
-        }
-    }
-
-    fn into_range_watch(self) -> range_watch::Sender {
-        match self {
-            Self::Disk(inner) => inner.into_parts(),
-            Self::MemLimited(inner) => inner.into_parts(),
-            Self::MemUnlimited(inner) => inner.into_parts(),
         }
     }
 

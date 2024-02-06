@@ -219,34 +219,25 @@ impl Handle {
             .map_err(GetReaderError::CreationFailed)
     }
 
-    pub fn get_downloaded(&self) -> () {
-        todo!()
-    }
-
     pub async fn use_limited_mem_backend(
         &mut self,
         max_cap: NonZeroUsize,
     ) -> Result<(), MigrationError> {
-        migrate::to_mem(self.store.clone(), self.capacity_watch.clone(), max_cap).await
+        migrate::to_mem(&mut self.store_writer, max_cap).await
     }
 
     pub async fn use_unlimited_mem_backend(&mut self) -> Result<(), MigrationError> {
-        migrate::to_unlimited_mem(self.store.clone(), self.capacity_watch.clone()).await
+        migrate::to_unlimited_mem(&mut self.store_writer).await
     }
 
     pub async fn use_disk_backend(&mut self, path: PathBuf) -> Result<(), MigrationError> {
-        migrate::to_disk(self.store.clone(), self.capacity_watch.clone(), path).await
+        migrate::to_disk(&mut self.store_writer, path).await
     }
 
     /// Only does something when the store actually supports flush
     #[tracing::instrument(level = "trace", skip(self))]
     pub async fn flush(&mut self) -> Result<(), Error> {
-        self.store
-            .lock()
-            .await
-            .flush()
-            .await
-            .map_err(Error::Flushing)
+        self.store_writer.flush().await.map_err(Error::Flushing)
     }
 }
 

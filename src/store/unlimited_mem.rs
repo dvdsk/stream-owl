@@ -6,7 +6,7 @@ use tracing::{debug, instrument};
 
 use rangemap::set::RangeSet;
 
-use super::range_watch;
+use crate::RangeUpdate;
 
 mod range_store;
 use range_store::RangeStore;
@@ -18,8 +18,6 @@ pub(crate) struct Memory {
     buffer: RangeStore,
     /// the range currently being added to
     active_range: Range<u64>,
-    #[derivative(Debug = "ignore")]
-    range_tx: range_watch::Sender,
     last_read_pos: u64,
 }
 
@@ -39,17 +37,20 @@ pub enum Error {
 pub struct CouldNotAllocate(#[from] TryReserveError);
 
 impl Memory {
-    pub(super) fn new(range_tx: range_watch::Sender) -> Self {
+    pub(super) fn new() -> Self {
         Self {
             last_read_pos: 0,
             buffer: RangeStore::new(),
             active_range: 0..0,
-            range_tx,
         }
     }
 
     #[tracing::instrument(level="trace", skip(buf), fields(buf_len = buf.len()))]
-    pub(super) async fn write_at(&mut self, buf: &[u8], pos: u64) -> Result<NonZeroUsize, Error> {
+    pub(super) async fn write_at(
+        &mut self,
+        buf: &[u8],
+        pos: u64,
+    ) -> Result<(NonZeroUsize, RangeUpdate), Error> {
         assert!(!buf.is_empty());
         if pos != self.active_range.end {
             debug!("refusing write: position not at current range end, seek must be in progress");
@@ -60,8 +61,10 @@ impl Memory {
         let written = buf.len();
 
         self.active_range.end += written as u64;
-        self.range_tx.send(self.active_range.clone());
-        return Ok(NonZeroUsize::new(written).expect("should never be passed a zero sized write"));
+        let update = RangeUpdate::Added(self.active_range.clone());
+        let written =
+            NonZeroUsize::new(written).expect("should never be passed a zero sized write");
+        return Ok((written, update));
     }
 
     /// we must only get here if there is data in the mem store for us
@@ -85,27 +88,17 @@ impl Memory {
             .next()
             .is_none()
     }
-
-    pub(super) fn set_range_tx(&mut self, tx: range_watch::Sender) {
-        self.range_tx = tx;
-    }
-
     pub(super) fn last_read_pos(&self) -> u64 {
         self.last_read_pos
     }
     pub(super) fn n_supported_ranges(&self) -> usize {
         usize::MAX
     }
-    pub(super) fn into_parts(self) -> range_watch::Sender {
-        let Self { range_tx, .. } = self;
-        range_tx
-    }
     #[instrument(level = "debug")]
     pub(super) fn writer_jump(&mut self, to_pos: u64) {
         debug_assert!(!self.active_range.contains(&to_pos));
 
         self.active_range = to_pos..to_pos;
-        self.range_tx.send(to_pos..to_pos);
         self.last_read_pos = to_pos;
     }
 }

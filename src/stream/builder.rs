@@ -252,24 +252,36 @@ impl StreamBuilder<true> {
         crate::store::Error,
     > {
         let stream_size = Size::default();
+        let (report_tx, report_rx) = std::sync::mpsc::channel();
+
         let (store_reader, store_writer) = match self.storage.expect("must chose storage option") {
-            StorageChoice::Disk(path) => store::new_disk_backed(path, stream_size.clone()).await?,
-            StorageChoice::MemLimited(limit) => {
-                store::new_limited_mem_backed(limit, stream_size.clone())?
+            StorageChoice::Disk(path) => {
+                store::new_disk_backed(path, stream_size.clone(), report_tx.clone()).await?
             }
-            StorageChoice::MemUnlimited => store::new_unlimited_mem_backed(stream_size.clone()),
+            StorageChoice::MemLimited(limit) => {
+                store::new_limited_mem_backed(limit, stream_size.clone(), report_tx.clone())?
+            }
+            StorageChoice::MemUnlimited => {
+                store::new_unlimited_mem_backed(stream_size.clone(), report_tx.clone())
+            }
         };
 
         let (seek_tx, seek_rx) = mpsc::channel(12);
         let (pause_tx, pause_rx) = mpsc::channel(12);
         let (bandwidth_lim, bandwidth_lim_tx) = BandwidthLim::new(self.bandwidth);
 
+        let reporting_task = reporting::setup(
+            report_rx,
+            self.bandwidth_callback,
+            self.range_callback,
+            self.retry_log_callback,
+        );
+
         let mut handle = Handle {
             prefetch: self.initial_prefetch,
             seek_tx,
             is_paused: false,
-            store: store_reader.curr_store.clone(),
-            capacity_watch: store_writer.capacity_watcher.clone(),
+            store_writer: store_writer.clone(),
             store_reader: Arc::new(Mutex::new(store_reader)),
             pause_tx,
             bandwidth_lim_tx,

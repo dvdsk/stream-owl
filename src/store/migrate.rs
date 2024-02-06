@@ -1,70 +1,62 @@
 use std::num::NonZeroUsize;
 use std::ops::Range;
 use std::path::PathBuf;
-use std::sync::Arc;
 
 use rangemap::set::RangeSet;
 use tokio::sync::oneshot::error::RecvError;
 use tokio::sync::Mutex;
 use tracing::{instrument, trace};
 
-use super::capacity::CapacityWatcher;
 use super::disk;
 use super::disk::Disk;
 use super::limited_mem;
 use super::unlimited_mem;
+use super::StoreWriter;
 use super::{range_watch, Store, StoreVariant};
 use crate::store;
-use crate::store::migrate::range_list::RangeLen;
+use crate::util::RangeLen;
 
 mod range_list;
 
-#[instrument(skip(store, capacity_watch), ret)]
+#[instrument(skip(store_writer), ret)]
 pub(crate) async fn to_mem(
-    store: Arc<Mutex<Store>>,
-    capacity_watch: CapacityWatcher,
+    store_writer: &mut StoreWriter,
     max_cap: NonZeroUsize,
 ) -> Result<(), MigrationError> {
-    if let StoreVariant::MemLimited = store.lock().await.variant().await {
+    if let StoreVariant::MemLimited = store_writer.variant().await {
         return Ok(());
     }
 
     // is swapped out before migration finishes
-    let (watch_placeholder, _) = range_watch::channel();
+    let (watch_placeholder, _guard) = range_watch::placeholder();
     let mem = limited_mem::Memory::new(max_cap, watch_placeholder)?;
 
-    migrate(store.clone(), Store::MemLimited(mem), capacity_watch).await
+    migrate(store_writer, Store::MemLimited(mem)).await
 }
 
-#[instrument(skip(store, capacity_watch), ret)]
-pub(crate) async fn to_unlimited_mem(
-    store: Arc<Mutex<Store>>,
-    capacity_watch: CapacityWatcher,
-) -> Result<(), MigrationError> {
-    if let StoreVariant::MemUnlimited = store.lock().await.variant().await {
+#[instrument(skip(store_writer), ret)]
+pub(crate) async fn to_unlimited_mem(store_writer: &mut StoreWriter) -> Result<(), MigrationError> {
+    if let StoreVariant::MemUnlimited = store_writer.variant().await {
         return Ok(());
     }
 
-    // is swapped out before migration finishes
-    let (watch_placeholder, _) = range_watch::channel();
-    let mem = unlimited_mem::Memory::new(watch_placeholder);
-    migrate(store.clone(), Store::MemUnlimited(mem), capacity_watch).await
+    let mem = unlimited_mem::Memory::new();
+    migrate(store_writer, Store::MemUnlimited(mem)).await
 }
 
-#[instrument(skip(store, capacity_watch), ret)]
+#[instrument(skip(store_writer), ret)]
 pub(crate) async fn to_disk(
-    store: Arc<Mutex<Store>>,
-    capacity_watch: CapacityWatcher,
+    store_writer: &mut StoreWriter,
     path: PathBuf,
 ) -> Result<(), MigrationError> {
-    if let StoreVariant::Disk = store.lock().await.variant().await {
+    if let StoreVariant::Disk = store_writer.variant().await {
         return Ok(());
     }
 
     // is swapped out before migration finishes
-    let (watch_placeholder, _) = range_watch::channel();
+    let (watch_placeholder, _guard) = range_watch::placeholder();
     let disk = Disk::new(path, watch_placeholder).await?;
-    migrate(store.clone(), Store::Disk(disk), capacity_watch).await
+    migrate(store_writer, Store::Disk(disk)).await
 }
 
 #[derive(thiserror::Error, Debug)]
@@ -86,22 +78,23 @@ pub enum MigrationError {
 }
 
 #[instrument(skip_all, ret)]
-async fn migrate(
-    curr: Arc<Mutex<Store>>,
-    mut target: Store,
-    capacity: CapacityWatcher,
-) -> Result<(), MigrationError> {
-    pre_migrate(&curr, &mut target).await?;
-    let mut curr = curr.lock().await;
+async fn migrate(store_writer: &mut StoreWriter, mut target: Store) -> Result<(), MigrationError> {
+    let StoreWriter {
+        curr_store,
+        capacity_watcher,
+        range_watch,
+    } = store_writer;
+    pre_migrate(&curr_store, &mut target).await?;
+    let mut curr = curr_store.lock().await;
     finish_migration(&mut curr, &mut target).await?;
 
     let target_ref = &mut target;
     std::mem::swap(&mut *curr, target_ref);
     let old = target;
 
-    let range_watch = old.into_range_watch();
-    curr.set_range_tx(range_watch);
-    capacity.re_init_from(curr.can_write());
+    let old_ranges = old.ranges();
+    capacity_watcher.re_init_from(curr.can_write());
+    range_watch.send_diff(old_ranges, curr.ranges());
 
     Ok(())
 }

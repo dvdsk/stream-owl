@@ -10,7 +10,7 @@ use tokio::fs::File;
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 use tracing::{debug, instrument};
 
-use crate::store::disk::progress::FlushNeeded;
+use crate::RangeUpdate;
 
 use self::progress::Progress;
 
@@ -95,7 +95,8 @@ impl Disk {
             .seek(SeekFrom::Start(to))
             .await
             .map_err(Error::SeekForWriting)?;
-        if let FlushNeeded::Yes = self.progress.end_section(self.file_pos, to).await {
+        let flush_needed = self.progress.end_section(self.file_pos, to).await;
+        if flush_needed {
             self.flush().await?;
         }
         self.file_pos = to;
@@ -104,7 +105,11 @@ impl Disk {
     }
 
     #[instrument(level="trace", skip(buf), fields(buf_len = buf.len()), ret)]
-    pub(super) async fn write_at(&mut self, buf: &[u8], pos: u64) -> Result<NonZeroUsize, Error> {
+    pub(super) async fn write_at(
+        &mut self,
+        buf: &[u8],
+        pos: u64,
+    ) -> Result<(NonZeroUsize, RangeUpdate), Error> {
         if pos != self.last_write {
             self.seek_for_write(pos).await?;
         } else if pos != self.file_pos {
@@ -116,10 +121,16 @@ impl Disk {
         let written = self.file.write(buf).await.map_err(Error::WritingData)?;
         self.last_write += written as u64;
         self.file_pos = self.last_write;
-        if let FlushNeeded::Yes = self.progress.update(self.file_pos).await {
+        let (range_update, flush_needed) = self.progress.update(self.file_pos).await;
+
+        if flush_needed {
             self.flush().await?;
         }
-        Ok(NonZeroUsize::new(written).expect("File should always accept more bytes"))
+
+        Ok((
+            NonZeroUsize::new(written).expect("File should always accept more bytes"),
+            range_update,
+        ))
     }
 
     #[instrument(level = "trace", skip(self, buf))]
@@ -146,24 +157,12 @@ impl Disk {
             .is_none()
     }
 
-    pub(super) fn set_range_tx(&mut self, tx: range_watch::Sender) {
-        self.progress.range_tx = tx
-    }
-
     pub(super) fn last_read_pos(&self) -> u64 {
         self.file_pos
     }
 
     pub(super) fn n_supported_ranges(&self) -> usize {
         usize::MAX
-    }
-
-    pub(super) fn into_parts(self) -> range_watch::Sender {
-        let Self {
-            progress: Progress { range_tx, .. },
-            ..
-        } = self;
-        range_tx
     }
 
     // OPT: see if we can use this to optimize write at

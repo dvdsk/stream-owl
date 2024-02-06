@@ -10,6 +10,7 @@ use rangemap::RangeSet;
 use tracing::{debug, instrument};
 
 use crate::store::range_watch;
+use crate::RangeUpdate;
 
 // TODO make append only + regular cleanup use sys atomic move file
 
@@ -45,8 +46,6 @@ pub(super) struct Progress {
     #[derivative(Debug(format_with = "fmt_last_flush"))]
     last_flush: Instant,
     pub(super) ranges: RangeSet<u64>,
-    #[derivative(Debug = "ignore")]
-    pub(super) range_tx: range_watch::Sender,
 }
 
 fn fmt_last_flush(
@@ -56,11 +55,7 @@ fn fmt_last_flush(
     fmt.write_fmt(format_args!("{}ms ago", instant.elapsed().as_millis()))
 }
 
-#[derive(Debug)]
-pub(super) enum FlushNeeded {
-    Yes,
-    No,
-}
+type FlushNeeded = bool;
 
 impl Progress {
     #[instrument(level = "debug", skip(range_tx))]
@@ -88,7 +83,7 @@ impl Progress {
         }
 
         for range in ranges.iter().cloned() {
-            range_tx.send(range);
+            range_tx.add(range);
         }
 
         Ok(Progress {
@@ -96,33 +91,27 @@ impl Progress {
             ranges,
             last_flush: Instant::now(),
             next_record_start: start_pos,
-            range_tx,
         })
     }
 
     /// Data needs to be already flushed before this is called
     #[instrument(level = "debug", skip(self))]
     pub(super) async fn end_section(&mut self, end: u64, new_starts_at: u64) -> FlushNeeded {
-        let res = self.update(end).await;
+        let new_range = self.next_record_start..end;
+        self.ranges.insert(new_range.clone());
+        let flush_needed = self.last_flush.elapsed() > Duration::from_millis(500);
         self.next_record_start = new_starts_at;
         debug!("ended section");
-        res
+        flush_needed
     }
 
     #[instrument(level = "trace", skip(self), ret)]
-    pub(super) async fn update(&mut self, writer_pos: u64) -> FlushNeeded {
+    pub(super) async fn update(&mut self, writer_pos: u64) -> (RangeUpdate, FlushNeeded) {
         let new_range = self.next_record_start..writer_pos;
-        if new_range.is_empty() {
-            return FlushNeeded::No;
-        }
         self.ranges.insert(new_range.clone());
-        self.range_tx.send(new_range);
-
-        if self.last_flush.elapsed() > Duration::from_millis(500) {
-            FlushNeeded::Yes
-        } else {
-            FlushNeeded::No
-        }
+        let update = RangeUpdate::Added(new_range);
+        let flush_needed = self.last_flush.elapsed() > Duration::from_millis(500);
+        (update, flush_needed)
     }
 
     /// Data needs to be already flushed before this is called
