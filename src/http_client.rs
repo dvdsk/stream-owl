@@ -5,17 +5,18 @@ use derivative::Derivative;
 use futures::Future;
 use http::{header, HeaderValue, StatusCode};
 use hyper::body::Incoming;
-use tracing::{debug, info, warn, instrument};
+use tracing::{debug, info, instrument, warn};
 
 use crate::network::{BandwidthLim, Network};
-use crate::stream::retry;
+use crate::stream::{retry, ReportTx};
 use crate::target::StreamTarget;
-mod io;
+
 mod read;
 use read::Reader;
 mod headers;
 mod response;
 mod size;
+
 pub(crate) use size::Size;
 
 mod connection;
@@ -167,16 +168,18 @@ pub(crate) struct ClientBuilder {
     restriction: Option<Network>,
     #[derivative(Debug = "ignore")]
     bandwidth_lim: BandwidthLim,
+    #[derivative(Debug = "ignore")]
     url: hyper::Uri,
     cookies: Cookies,
     size: Size,
 }
 
 impl ClientBuilder {
-    #[tracing::instrument(level = "debug")]
+    #[tracing::instrument(level = "debug", skip(report_tx))]
     pub(crate) async fn connect(
         self,
         target: &mut StreamTarget,
+        report_tx: &ReportTx,
         timeout: Duration,
     ) -> Result<StreamingClient, error::Error> {
         debug!(
@@ -197,7 +200,8 @@ impl ClientBuilder {
             .expect("should be a range to get after seek or on connect");
         let first_range = format!("bytes={start}-{end}");
 
-        let mut conn = Connection::new(&url, &restriction, &bandwidth_lim, timeout).await?;
+        let mut conn =
+            Connection::new(&url, &restriction, &bandwidth_lim, report_tx.clone(), timeout).await?;
         let mut response = conn
             .send_initial_request(&url, &cookies, &first_range, timeout)
             .await?;
@@ -213,7 +217,8 @@ impl ClientBuilder {
             url = redirect_url(response)?;
             if url.host() != prev_url.host() {
                 prev_url = url.clone();
-                conn = Connection::new(&url, &restriction, &bandwidth_lim, timeout).await?;
+                conn =
+                    Connection::new(&url, &restriction, &bandwidth_lim, report_tx.clone(), timeout).await?;
             }
             response = conn
                 .send_initial_request(&url, &cookies, &first_range, timeout)
@@ -262,13 +267,14 @@ impl ClientBuilder {
 }
 
 impl StreamingClient {
-    #[tracing::instrument(level = "debug", skip(bandwidth_lim), ret)]
+    #[tracing::instrument(level = "debug", skip(bandwidth_lim, report_tx), ret)]
     pub(crate) async fn new(
         url: hyper::Uri,
         restriction: Option<Network>,
         bandwidth_lim: BandwidthLim,
         size: Size,
         target: &mut StreamTarget,
+        report_tx: ReportTx,
         retry: &mut retry::Decider,
         timeout: Duration,
     ) -> Result<Self, error::Error> {
@@ -281,7 +287,7 @@ impl StreamingClient {
         };
 
         loop {
-            let res = builder.clone().connect(target, timeout).await;
+            let res = builder.clone().connect(target, &report_tx, timeout).await;
 
             let Err(err) = res else {
                 return res;

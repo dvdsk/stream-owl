@@ -3,16 +3,17 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use stream_owl::testing::TestEnded;
-use stream_owl::{testing, Bandwidth, StreamBuilder, StreamDone};
+use stream_owl::{testing, BandwidthLimit, StreamBuilder, StreamDone};
 use tokio::sync::Notify;
 
 #[test]
 fn stream_not_faster_then_limit() {
+    testing::setup_tracing();
     let configure = {
         move |b: StreamBuilder<false>| {
             b.with_prefetch(0)
                 .to_unlimited_mem()
-                .with_bandwidth_limit(Bandwidth::kbytes(20).unwrap())
+                .with_bandwidth_limit(BandwidthLimit::kbytes(20).unwrap())
         }
     };
 
@@ -34,9 +35,11 @@ fn stream_not_faster_then_limit() {
         "elapsed: {:?}",
         start.elapsed()
     );
-    dbg!(start.elapsed());
 
     test_done.notify_one();
+
+    std::mem::drop(handle);
+    std::mem::drop(reader);
     let test_ended = runtime_thread.join().unwrap();
     assert!(matches!(
         test_ended,

@@ -1,7 +1,8 @@
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use bytes::Bytes;
+use derivative::Derivative;
 use http::method::Method;
 use http::{header, HeaderValue, Request};
 use http_body_util::Empty;
@@ -11,11 +12,60 @@ use tokio::net::{TcpSocket, TcpStream};
 use tokio::task::JoinSet;
 use tracing::instrument;
 
-use crate::network::{BandwidthLim, Network};
-
 use super::{error, FutureTimeout};
-use super::io::ThrottlableIo;
 use super::{error::Error, Cookies};
+use crate::network::{BandwidthLim, Network};
+use crate::stream::{Report, ReportTx};
+
+mod throttle_io;
+use throttle_io::ThrottlableIo;
+
+#[derive(Derivative)]
+#[derivative(Debug)]
+pub(crate) struct BandwidthMonitor {
+    last_reported_bandwidth: usize,
+    last_update_at: Instant,
+    read_since_last_report: usize,
+    #[derivative(Debug = "ignore")]
+    report_tx: ReportTx,
+}
+
+impl BandwidthMonitor {
+    fn new(report_tx: ReportTx) -> BandwidthMonitor {
+        Self {
+            // init with something crazy so the
+            // first update will trigger a report
+            last_reported_bandwidth: usize::MAX,
+            last_update_at: Instant::now(),
+            read_since_last_report: 0,
+            report_tx,
+        }
+    }
+    /// future work: test/refine, enable multiple strategies?
+    fn update(&mut self, read: usize) {
+        self.read_since_last_report += read;
+
+        let margin = self.last_reported_bandwidth / 10;
+        let now = Instant::now();
+        let elapsed = now.saturating_duration_since(self.last_update_at);
+
+        // do not update more then once per 200ms
+        if elapsed < Duration::from_millis(200) {
+            return;
+        }
+
+        // in 0.001 bytes per millisec aka bytes/sec
+        let curr_bandwidth = self.read_since_last_report * 1000 / (elapsed.as_millis() as usize);
+        if self.last_reported_bandwidth.abs_diff(curr_bandwidth) > margin {
+            let _ignore_no_space_left_error = self
+                .report_tx
+                .send(Report::Bandwidth(curr_bandwidth));
+            self.last_reported_bandwidth = curr_bandwidth;
+            self.last_update_at = now;
+            self.read_since_last_report = 0;
+        }
+    }
+}
 
 #[derive(Debug)]
 pub(crate) struct Connection {
@@ -30,10 +80,13 @@ impl Connection {
         url: &hyper::Uri,
         restriction: &Option<Network>,
         bandwidth_lim: &BandwidthLim,
+        report_tx: ReportTx,
         timeout: Duration,
     ) -> Result<Self, Error> {
+        let bandwidth_monitor = BandwidthMonitor::new(report_tx);
         let tcp = new_tcp_stream(&url, &restriction).await?;
-        let io = ThrottlableIo::new(tcp, bandwidth_lim).map_err(Error::SocketConfig)?;
+        let io = ThrottlableIo::new(tcp, bandwidth_lim, bandwidth_monitor)
+            .map_err(Error::SocketConfig)?;
         let (request_sender, conn) = http1::handshake(io)
             .with_timeout(timeout)
             .await

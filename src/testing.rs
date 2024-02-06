@@ -82,6 +82,7 @@ pub enum TestEnded {
 
 async fn wait_for_test_done(test_done: Arc<Notify>) -> TestEnded {
     test_done.notified().await;
+    tracing::info!("Test done");
     TestEnded::TestDone
 }
 
@@ -104,9 +105,11 @@ pub fn setup_tracing() {
         .pretty()
         .with_line_number(true)
         .with_test_writer();
+    let fmt = fmt.with_filter(filter);
 
+    // let console_layer = console_subscriber::spawn();
     let _ignore_err = tracing_subscriber::registry()
-        .with(filter)
+        // .with(console_layer)
         .with(fmt)
         .try_init();
 }

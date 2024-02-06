@@ -1,5 +1,6 @@
 use std::error::Error;
 use std::io::Read;
+use std::num::NonZeroUsize;
 use std::sync::Arc;
 
 use stream_owl::{testing, StreamBuilder};
@@ -22,7 +23,7 @@ fn main() -> Result<(), Box<dyn Error + Send + Sync + 'static>> {
         move |b: StreamBuilder<false>| {
             b.with_prefetch(0)
                 .to_unlimited_mem()
-                .with_chunk_size(10_000)
+                .with_fixed_chunk_size(NonZeroUsize::new(10_000).unwrap())
         }
     };
 

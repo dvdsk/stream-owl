@@ -1,3 +1,4 @@
+use derivative::Derivative;
 use futures::FutureExt;
 use futures_concurrency::future::Race;
 use rangemap::RangeSet;
@@ -21,6 +22,8 @@ use capacity::CapacityNotifier;
 pub(crate) use capacity::CapacityWatcher;
 
 use crate::http_client::Size;
+use crate::stream::ReportTx;
+use crate::RangeUpdate;
 
 #[derive(Debug)]
 pub(crate) struct StoreReader {
@@ -70,6 +73,7 @@ fn store_handles(
     rx: range_watch::Receiver,
     capacity: CapacityNotifier,
     capacity_watcher: CapacityWatcher,
+    range_watch: range_watch::Sender,
     stream_size: Size,
 ) -> (StoreReader, StoreWriter) {
     let curr_store = Arc::new(Mutex::new(store));

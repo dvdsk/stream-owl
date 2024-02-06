@@ -5,7 +5,7 @@ use futures::Future;
 use http::Uri;
 use tokio::sync::{mpsc, oneshot};
 
-use crate::network::{Bandwidth, Network};
+use crate::network::{BandwidthLimit, Network};
 use crate::stream;
 
 mod task;
@@ -96,7 +96,7 @@ impl Manager {
         rx.blocking_recv().unwrap()
     }
 
-    pub fn limit_bandwidth(&mut self, _bandwidth: Bandwidth) {
+    pub fn limit_bandwidth(&mut self, _bandwidth: BandwidthLimit) {
         todo!();
     }
 }

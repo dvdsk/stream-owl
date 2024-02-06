@@ -1,3 +1,4 @@
+use std::any::Any;
 use std::num::NonZeroUsize;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -9,18 +10,22 @@ use tokio::sync::Mutex as TokioMutex;
 use tracing::{info, instrument};
 
 use crate::manager::Command;
-use crate::network::{Bandwidth, BandwidthAllowed, BandwidthTx};
+use crate::network::{BandwidthAllowed, BandwidthLimit, BandwidthTx};
 use crate::reader::{CouldNotCreateRuntime, Reader};
 use crate::store::migrate::MigrationError;
-use crate::store::{migrate, CapacityWatcher, Store, StoreReader};
+use crate::store::{migrate, StoreReader, StoreWriter};
 use crate::{http_client, store};
 
 mod builder;
-pub use builder::StreamBuilder;
-pub use task::StreamDone;
 mod drop;
+mod reporting;
 mod task;
+
+pub use builder::StreamBuilder;
+pub use reporting::RangeUpdate;
+pub(crate) use reporting::{Report, ReportTx};
 pub(crate) use task::retry;
+pub use task::StreamDone;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -30,6 +35,8 @@ pub enum Error {
     Writing(std::io::Error),
     #[error("Error flushing store to durable storage: {0:?}")]
     Flushing(store::Error),
+    #[error("Callback provided by the user panicked: {0:?}")]
+    UserCallbackPanicked(Box<dyn Any + Send + 'static>),
 }
 
 #[derive(Debug, PartialEq, Eq, Hash)]
@@ -66,14 +73,12 @@ pub struct Handle {
     bandwidth_lim_tx: BandwidthTx,
     is_paused: bool,
 
-    #[derivative(Debug = "ignore")]
-    capacity_watch: CapacityWatcher,
-    #[derivative(Debug(format_with = "fmt_reader_in_use"))]
+    #[derivative(Debug(format_with = "mutex_in_use"))]
     store_reader: Arc<TokioMutex<StoreReader>>,
-    store: Arc<TokioMutex<Store>>,
+    store_writer: StoreWriter,
 }
 
-fn fmt_reader_in_use(
+fn mutex_in_use(
     store: &Arc<TokioMutex<StoreReader>>,
     fmt: &mut std::fmt::Formatter,
 ) -> std::result::Result<(), std::fmt::Error> {
@@ -87,8 +92,10 @@ fn fmt_reader_in_use(
 
 #[derive(Debug, thiserror::Error)]
 pub enum GetReaderError {
-    #[error("Can only have one reader at the time, please drop the 
-            existing one before getting a new one")]
+    #[error(
+        "Can only have one reader at the time, please drop the 
+            existing one before getting a new one"
+    )]
     ReaderInUse,
     #[error("Could not set up a runtime to get a reader in a blocking fashion: {0}")]
     CreationFailed(CouldNotCreateRuntime),
@@ -136,7 +143,7 @@ impl ManagedHandle {
 
     managed_async! {pause}
     managed_async! {unpause}
-    managed_async! {limit_bandwidth bandwidth: Bandwidth}
+    managed_async! {limit_bandwidth bandwidth: BandwidthLimit}
     managed_async! {remove_bandwidth_limit}
     managed_async! {use_limited_mem_backend max_cap: NonZeroUsize; Result<(), MigrationError>}
     managed_async! {use_unlimited_mem_backend ; Result<(), MigrationError>}
@@ -144,12 +151,11 @@ impl ManagedHandle {
     managed_async! {flush ; Result<(), Error>}
 
     managed! {try_get_reader; Result<crate::reader::Reader, GetReaderError>}
-    managed! {get_downloaded; ()}
 }
 impl ManagedHandle {
     blocking! {pause - pause_blocking}
     blocking! {unpause - unpause_blocking}
-    blocking! {limit_bandwidth - limit_bandwidth_blocking bandwidth: Bandwidth}
+    blocking! {limit_bandwidth - limit_bandwidth_blocking bandwidth: BandwidthLimit}
     blocking! {remove_bandwidth_limit - remove_bandwidth_limit_blocking}
     blocking! {use_limited_mem_backend - use_mem_backend_blocking max_cap: NonZeroUsize; Result<(), MigrationError>}
     blocking! {use_unlimited_mem_backend - use_unlimited_mem_backend_blocking ; Result<(), MigrationError>}
@@ -166,7 +172,7 @@ impl Drop for ManagedHandle {
 }
 
 impl Handle {
-    pub async fn limit_bandwidth(&self, bandwidth: Bandwidth) {
+    pub async fn limit_bandwidth(&self, bandwidth: BandwidthLimit) {
         self.bandwidth_lim_tx
             .send(BandwidthAllowed::Limited(bandwidth))
             .await
@@ -248,7 +254,7 @@ impl Handle {
 impl Handle {
     blocking! {pause - pause_blocking}
     blocking! {unpause - unpause_blocking}
-    blocking! {limit_bandwidth - limit_bandwidth_blocking bandwidth: Bandwidth}
+    blocking! {limit_bandwidth - limit_bandwidth_blocking bandwidth: BandwidthLimit}
     blocking! {remove_bandwidth_limit - remove_bandwidth_limit_blocking}
     blocking! {use_limited_mem_backend - use_mem_backend_blocking max_cap: NonZeroUsize; Result<(), MigrationError>}
     blocking! {use_disk_backend - use_disk_backend_blocking path: PathBuf; Result<(), MigrationError>}

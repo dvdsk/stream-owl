@@ -2,6 +2,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use crate::http_client::Error;
+use crate::stream::{Report, ReportTx};
 use derivative::Derivative;
 use http::StatusCode;
 use tracing::{debug, instrument, trace, warn};
@@ -129,8 +130,7 @@ limit_type!(RetryDurLimit: Duration, Duration::ZERO, Duration::MAX);
 #[derivative(Debug)]
 pub(crate) struct Decider {
     recent: Vec<Event>,
-    #[derivative(Debug = "ignore")]
-    log_to_user: Box<dyn FnMut(Arc<Error>) + Send>,
+    log_to_user: Option<ReportTx>,
     retry_disabled: bool,
     /// how often the **same error** may happen before we give up
     retry_limit: RetryLimit,
@@ -142,12 +142,12 @@ impl Decider {
     pub(crate) fn with_limits(
         max_retries: RetryLimit,
         max_retry_dur: RetryDurLimit,
-        log_to_user: Box<dyn FnMut(Arc<Error>) + Send>,
+        log_to_user: ReportTx,
     ) -> Self {
         Self {
             retry_disabled: false,
             recent: Vec::new(),
-            log_to_user,
+            log_to_user: Some(log_to_user),
             retry_limit: max_retries,
             max_retry_dur,
         }
@@ -156,7 +156,7 @@ impl Decider {
     pub(crate) fn disabled() -> Decider {
         Self {
             retry_disabled: true,
-            log_to_user: Box::new(|_| {}),
+            log_to_user: None,
             recent: Vec::new(),
             retry_limit: RetryLimit::default(),
             max_retry_dur: RetryDurLimit::default(),
@@ -233,7 +233,9 @@ impl Decider {
         }
 
         let error = Arc::new(err);
-        (self.log_to_user)(error.clone());
+        if let Some(ref mut report_tx) = self.log_to_user {
+            let _ignore_closed_channel = report_tx.send(Report::RetriedError(error.clone()));
+        }
         self.register(error, approach);
         CouldSucceed::Yes
     }

@@ -44,7 +44,7 @@ pub fn list_interfaces() -> Result<Vec<Network>, network_interface::Error> {
 
 // internally uses bytes per second
 #[derive(Debug, Clone, Copy)]
-pub struct Bandwidth(pub(crate) NonZeroU32);
+pub struct BandwidthLimit(pub(crate) NonZeroU32);
 
 #[derive(Debug, thiserror::Error)]
 pub enum BandwidthError {
@@ -60,7 +60,7 @@ fn minimal_recv_buf_size() -> Result<usize, io::Error> {
     socket.recv_buffer_size()
 }
 
-impl Bandwidth {
+impl BandwidthLimit {
     pub fn kbytes(n: u32) -> Result<Self, BandwidthError> {
         Self::bytes(n * 1000)
     }
@@ -100,7 +100,7 @@ pub(crate) type BandwidthTx = mpsc::Sender<BandwidthAllowed>;
 
 #[derive(Debug)]
 pub(crate) enum BandwidthAllowed {
-    Limited(Bandwidth),
+    Limited(BandwidthLimit),
     UnLimited,
 }
 

@@ -11,13 +11,14 @@ use tokio::sync::{mpsc, Mutex};
 use tracing::debug;
 
 use crate::http_client::{self, Size};
-use crate::network::{Bandwidth, BandwidthAllowed, BandwidthLim, Network};
+use crate::network::{BandwidthAllowed, BandwidthLim, BandwidthLimit, Network};
 use crate::store;
 use crate::target::{ChunkSizeBuilder, StreamTarget};
 use crate::{manager, StreamDone, StreamId};
 
+use super::reporting::RangeUpdate;
 use super::retry::{RetryDurLimit, RetryLimit};
-use super::{task, Error, Handle, ManagedHandle, StreamEnded};
+use super::{reporting, task, Error, Handle, ManagedHandle, StreamEnded};
 
 #[derive(Debug)]
 enum StorageChoice {
@@ -36,15 +37,21 @@ pub struct StreamBuilder<const STORAGE_SET: bool> {
     restriction: Option<Network>,
     start_paused: bool,
     bandwidth: BandwidthAllowed,
+
     retry_disabled: bool,
     max_retries: RetryLimit,
     max_retry_dur: RetryDurLimit,
-    #[derivative(Debug(format_with = "fmt_retry_logger"))]
-    retry_logger: Option<Box<dyn FnMut(Arc<http_client::Error>) + Send>>,
     timeout: Duration,
+
+    #[derivative(Debug(format_with = "fmt_non_printable_option"))]
+    retry_log_callback: Option<Box<dyn FnMut(Arc<http_client::Error>) + Send>>,
+    #[derivative(Debug(format_with = "fmt_non_printable_option"))]
+    bandwidth_callback: Option<Box<dyn FnMut(usize) + Send>>,
+    #[derivative(Debug(format_with = "fmt_non_printable_option"))]
+    range_callback: Option<Box<dyn FnMut(RangeUpdate) + Send>>,
 }
 
-fn fmt_retry_logger<T>(
+fn fmt_non_printable_option<T>(
     retry_logger: &Option<T>,
     fmt: &mut std::fmt::Formatter,
 ) -> std::result::Result<(), std::fmt::Error> {
@@ -65,11 +72,13 @@ impl StreamBuilder<false> {
             restriction: None,
             start_paused: false,
             bandwidth: BandwidthAllowed::UnLimited,
+            bandwidth_callback: None,
             retry_disabled: false,
             max_retries: RetryLimit::Unlimited,
             max_retry_dur: RetryDurLimit::Unlimited,
-            retry_logger: None,
+            retry_log_callback: None,
             timeout: Duration::from_secs(2),
+            range_callback: None,
         }
     }
 }
@@ -88,7 +97,9 @@ impl StreamBuilder<false> {
             retry_disabled: self.retry_disabled,
             max_retries: self.max_retries,
             max_retry_dur: self.max_retry_dur,
-            retry_logger: self.retry_logger,
+            retry_log_callback: self.retry_log_callback,
+            bandwidth_callback: self.bandwidth_callback,
+            range_callback: self.range_callback,
             timeout: self.timeout,
         }
     }
@@ -105,7 +116,9 @@ impl StreamBuilder<false> {
             retry_disabled: self.retry_disabled,
             max_retries: self.max_retries,
             max_retry_dur: self.max_retry_dur,
-            retry_logger: self.retry_logger,
+            retry_log_callback: self.retry_log_callback,
+            bandwidth_callback: self.bandwidth_callback,
+            range_callback: self.range_callback,
             timeout: self.timeout,
         }
     }
@@ -122,7 +135,9 @@ impl StreamBuilder<false> {
             retry_disabled: self.retry_disabled,
             max_retries: self.max_retries,
             max_retry_dur: self.max_retry_dur,
-            retry_logger: self.retry_logger,
+            retry_log_callback: self.retry_log_callback,
+            bandwidth_callback: self.bandwidth_callback,
+            range_callback: self.range_callback,
             timeout: self.timeout,
         }
     }
@@ -153,7 +168,7 @@ impl<const STORAGE_SET: bool> StreamBuilder<STORAGE_SET> {
         self
     }
     /// By default there is no bandwidth limit
-    pub fn with_bandwidth_limit(mut self, bandwidth: Bandwidth) -> Self {
+    pub fn with_bandwidth_limit(mut self, bandwidth: BandwidthLimit) -> Self {
         self.bandwidth = BandwidthAllowed::Limited(bandwidth);
         self
     }
@@ -191,7 +206,7 @@ impl<const STORAGE_SET: bool> StreamBuilder<STORAGE_SET> {
         mut self,
         logger: impl FnMut(Arc<http_client::Error>) + Send + 'static,
     ) -> Self {
-        self.retry_logger = Some(Box::new(logger));
+        self.retry_log_callback = Some(Box::new(logger));
         self
     }
 
@@ -270,15 +285,17 @@ impl StreamBuilder<true> {
             task::retry::Decider::with_limits(
                 self.max_retries,
                 self.max_retry_dur,
-                self.retry_logger.unwrap_or_else(|| Box::new(|_| {})),
+                report_tx.clone(),
             )
         };
 
         let chunk_size = self.chunk_size.build();
         let target = StreamTarget::new(store_writer, 0, chunk_size);
+
         let stream_task = task::new(
             self.url,
             target,
+            report_tx,
             seek_rx,
             self.restriction,
             bandwidth_lim,
@@ -286,7 +303,9 @@ impl StreamBuilder<true> {
             retry,
             self.timeout,
         );
+
         let stream_task = pausable(stream_task, pause_rx);
+        let stream_task = (stream_task, reporting_task).race();
         Ok((handle, stream_task))
     }
 }

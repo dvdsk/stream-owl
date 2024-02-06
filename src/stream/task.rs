@@ -14,6 +14,7 @@ use tracing::info;
 use tracing::instrument;
 use tracing::warn;
 
+use super::reporting::ReportTx;
 use super::Error;
 use futures_concurrency::future::Race;
 
@@ -32,6 +33,7 @@ pub enum StreamDone {
 pub(crate) async fn new(
     url: http::Uri,
     mut target: StreamTarget,
+    report_tx: ReportTx,
     mut seek_rx: mpsc::Receiver<u64>,
     restriction: Option<Network>,
     bandwidth_lim: BandwidthLim,
@@ -47,6 +49,7 @@ pub(crate) async fn new(
             bandwidth_lim.clone(),
             stream_size.clone(),
             &mut target,
+            report_tx.clone(),
             &mut retry,
             timeout,
         )
@@ -62,8 +65,15 @@ pub(crate) async fn new(
     loop {
         client = match client {
             StreamingClient::RangesSupported(client) => {
-                let res =
-                    stream_ranges(client, &mut target, &mut seek_rx, &mut retry, timeout).await;
+                let res = stream_ranges(
+                    client,
+                    &mut target,
+                    &report_tx,
+                    &mut seek_rx,
+                    &mut retry,
+                    timeout,
+                )
+                .await;
                 match res {
                     RangeRes::Done => return Ok(StreamDone::DownloadedAll),
                     RangeRes::Canceld => return Ok(StreamDone::Canceld),
@@ -77,6 +87,7 @@ pub(crate) async fn new(
                     &stream_size,
                     &mut seek_rx,
                     &mut target,
+                    &report_tx,
                     &mut retry,
                     timeout,
                 )
@@ -102,6 +113,7 @@ async fn stream_all(
     stream_size: &Size,
     seek_rx: &mut mpsc::Receiver<u64>,
     target: &mut StreamTarget,
+    report_tx: &ReportTx,
     retry: &mut retry::Decider,
     timeout: Duration,
 ) -> AllRes {
@@ -131,7 +143,7 @@ async fn stream_all(
     // get range support so any seek would translate to starting the stream
     // again. Which is wat we are doing here.
     let client = loop {
-        let err = match builder.clone().connect(target, timeout).await {
+        let err = match builder.clone().connect(target, &report_tx, timeout).await {
             Ok(client) => break client,
             Err(err) => err,
         };
@@ -152,10 +164,11 @@ enum RangeRes {
     RefuseRange(RangeRefused),
 }
 
-#[instrument(level = "debug", skip(client, target, seek_rx), ret)]
+#[instrument(level = "debug", skip(client, target, seek_rx, report_tx), ret)]
 async fn stream_ranges(
     mut client: RangeSupported,
     target: &mut StreamTarget,
+    report_tx: &ReportTx,
     seek_rx: &mut mpsc::Receiver<u64>,
     retry: &mut retry::Decider,
     timeout: Duration,
@@ -198,7 +211,7 @@ async fn stream_ranges(
             let get_seek = seek_rx.recv().map(Res4::Seek);
             let get_client_at_new_pos = client_builder
                 .clone()
-                .connect(target, timeout)
+                .connect(target, report_tx, timeout)
                 .map(Into::into);
 
             match (get_client_at_new_pos, get_seek).race().await {

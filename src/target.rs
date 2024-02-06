@@ -21,7 +21,6 @@ macro_rules! tracing_record {
 use crate::http_client::Size;
 use crate::store::{self, StoreWriter};
 
-
 #[derive(Debug)]
 pub(crate) struct StreamTarget {
     /// on seek this pos is updated, in between seeks
