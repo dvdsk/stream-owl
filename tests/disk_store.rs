@@ -1,9 +1,10 @@
 use std::io::{Read, Seek};
+use std::num::NonZeroUsize;
 use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 
-use stream_owl::testing::{test_data_range, Action, ServerControls, Event, TestEnded};
+use stream_owl::testing::{test_data_range, Action, Event, ServerControls, TestEnded};
 use stream_owl::{testing, StreamBuilder, StreamDone};
 use testing::ConnControls;
 use tokio::sync::Notify;
@@ -49,23 +50,31 @@ fn after_seeking_forward_download_still_completes() {
 
 #[test]
 fn resumes() {
+    testing::setup_tracing();
+
     let test_dl_path = stream_owl::testing::gen_file_path();
     let configure = {
         let path = test_dl_path.clone();
-        move |b: StreamBuilder<false>| b.with_prefetch(0).to_disk(path).start_paused(true)
+        move |b: StreamBuilder<false>| {
+            b.with_prefetch(0)
+                .to_disk(path)
+                .start_paused(true)
+                .with_fixed_chunk_size(NonZeroUsize::new(1000).unwrap())
+        }
     };
 
     {
         let conn_controls = ConnControls::new(Vec::new());
         let server_controls = ServerControls::new();
         server_controls.push(Event::Any, Action::Pause);
+        server_controls.push(Event::ByteRequested(5_000), Action::Cut { at: 5_000 });
 
         let test_file_size = 5_000u32;
         let test_done = Arc::new(Notify::new());
 
         let (runtime_thread, mut handle) = {
-        let server_controls = server_controls.clone();
-        let conn_controls = conn_controls.clone();
+            let server_controls = server_controls.clone();
+            let conn_controls = conn_controls.clone();
             testing::setup_reader_test(&test_done, test_file_size, configure.clone(), move |size| {
                 testing::pausable_server(size, server_controls, conn_controls)
             })
@@ -79,14 +88,13 @@ fn resumes() {
         thread::sleep(Duration::from_secs(1));
         server_controls.unpause_all();
 
-        server_controls.push(Event::ByteRequested(5_000), Action::Cut { at: 5_000 });
         // when this reads the last byte (byte 5k in the stream). The
         // test server will crash, making sure we do not read further.
         reader.read_exact(&mut vec![0; 3_000]).unwrap();
         test_done.notify_one();
 
         let test_ended = runtime_thread.join().unwrap();
-        assert!(matches!(test_ended, TestEnded::TestDone));
+        assert_eq!(test_ended, TestEnded::TestDone);
     }
     assert_read_part_downloaded(test_dl_path);
     info!("Part 2 of test, checking if read uses made progress");
@@ -103,20 +111,18 @@ fn resumes() {
         })
     };
 
-    // if we can read 3k at 2k without unpausing the stream 
+    // if we can read 3k at 2k without unpausing the stream
     // then we restored correctly
     let mut reader = handle.try_get_reader().unwrap();
     reader.seek(std::io::SeekFrom::Start(2_000)).unwrap();
     let mut buf = vec![0u8; 3_000];
-    info!("hi");
     reader.read_exact(&mut buf).unwrap();
-    info!("hi");
 
     assert_eq!(buf, testing::test_data_range(2_000..5_000));
     test_done.notify_one();
 
     let test_ended = runtime_thread.join().unwrap();
-    assert!(matches!(test_ended, TestEnded::TestDone));
+    assert_eq!(test_ended, TestEnded::TestDone);
 }
 
 fn assert_read_part_downloaded(test_dl_path: std::path::PathBuf) {

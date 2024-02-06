@@ -80,6 +80,22 @@ pub enum TestEnded {
     TestDone,
 }
 
+impl PartialEq for TestEnded {
+    fn eq(&self, other: &Self) -> bool {
+        use TestEnded as T;
+        match (self, other) {
+            (T::ServerCrashed(res1), T::ServerCrashed(res2)) => {
+                format!("{:?}", res1) == format!("{:?}", res2)
+            }
+            (T::StreamReturned(res1), T::StreamReturned(res2)) => {
+                format!("{:?}", res1) == format!("{:?}", res2)
+            }
+            (T::TestDone, T::TestDone) => true,
+            _ => false,
+        }
+    }
+}
+
 async fn wait_for_test_done(test_done: Arc<Notify>) -> TestEnded {
     test_done.notified().await;
     tracing::info!("Test done");

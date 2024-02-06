@@ -58,10 +58,7 @@ type FlushNeeded = bool;
 
 impl Progress {
     #[instrument(level = "debug")]
-    pub(super) async fn new(
-        file_path: PathBuf,
-        start_pos: u64,
-    ) -> Result<Progress> {
+    pub(super) async fn new(file_path: PathBuf, start_pos: u64) -> Result<Progress> {
         let mut file = fs::OpenOptions::new()
             .read(true)
             .write(true)
@@ -92,11 +89,17 @@ impl Progress {
     #[instrument(level = "debug", skip(self))]
     pub(super) async fn end_section(&mut self, end: u64, new_starts_at: u64) -> FlushNeeded {
         let new_range = self.next_record_start..end;
-        self.ranges.insert(new_range.clone());
-        let flush_needed = self.last_flush.elapsed() > Duration::from_millis(500);
-        self.next_record_start = new_starts_at;
-        debug!("ended section");
-        flush_needed
+        if !new_range.is_empty() {
+            self.ranges.insert(new_range.clone());
+            let flush_needed = self.last_flush.elapsed() > Duration::from_millis(500);
+            self.next_record_start = new_starts_at;
+            debug!("ended section");
+            flush_needed
+        } else {
+            self.next_record_start = new_starts_at;
+            debug!("ended empty section");
+            false
+        }
     }
 
     #[instrument(level = "trace", skip(self), ret)]

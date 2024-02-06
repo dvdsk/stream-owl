@@ -2,9 +2,8 @@ use std::sync::Arc;
 
 use tokio::task;
 
-use crate::{http_client, StreamDone};
 pub use crate::store::range_watch::RangeUpdate;
-
+use crate::{http_client, StreamDone};
 
 pub(crate) enum Report {
     Bandwidth(usize),
@@ -25,15 +24,17 @@ pub async fn setup(
     let mut retry_log_callback = retry_log_callback.unwrap_or_else(|| Box::new(|_| {}));
 
     let res = task::spawn_blocking(move || {
-        dbg!("should get out when all TX's have been dropped");
         for report in report_rx.iter() {
+            if let Report::Range(RangeUpdate::StreamClosed) = report {
+                break;
+            }
+
             match report {
                 Report::Bandwidth(update) => (bandwidth_callback)(update),
                 Report::Range(update) => (range_callback)(update),
                 Report::RetriedError(update) => (retry_log_callback)(update),
             }
         }
-        dbg!("should get out when all TX's have been dropped");
     })
     .await;
 

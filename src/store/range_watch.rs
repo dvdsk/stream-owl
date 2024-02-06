@@ -74,10 +74,11 @@ impl Sender {
         tracing::trace!("sending range update: {update:?}");
         if let Err(_) = self.watch_sender.send(update.clone()) {
             tracing::debug!("Could not send new range, receiver dropped");
-        } else {
-            self.report_tx
-                .send(Report::Range(update))
-                .expect("report receiver is only closed on user callback panick")
+        }
+        if let Err(_) = self.report_tx.send(Report::Range(update)) {
+            tracing::debug!(
+                "Could not report new range to callbacks, stream must have been dropped"
+            );
         }
     }
 

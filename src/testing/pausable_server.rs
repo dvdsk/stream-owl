@@ -142,8 +142,8 @@ async fn handler(
         .unwrap()
         .split_once("-")
         .unwrap();
-    let start = range.0.parse().unwrap();
-    let stop = range.1.parse().unwrap();
+    let start: u64 = range.0.parse().unwrap();
+    let stop: u64 = range.1.parse().unwrap();
 
     let actions: Vec<_> = {
         let range = start..stop;
@@ -167,7 +167,9 @@ async fn handler(
         }
     }
 
-    let data = state.test_data[range.start as usize..range.end as usize].to_owned();
+    let start = start.min(state.test_data.len() as u64);
+    let stop = stop.min(state.test_data.len() as u64);
+    let data = state.test_data[start as usize..stop as usize].to_owned();
     let total = state.test_data.len();
 
     Response::builder()
