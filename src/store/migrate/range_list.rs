@@ -2,12 +2,14 @@ use rangemap::set::RangeSet;
 use tracing::instrument;
 
 use crate::store::CapacityBounds;
-use crate::util::RangeLen;
+use crate::util::{MaybeLimited, RangeLen};
 
 use super::super::Store;
 
 use std::ops::Range;
 
+/* TODO: Change to iter first from center to end 
+ * then from center to begin <dvdsk noreply@davidsk.dev> */
 pub(crate) struct RangeListIterator {
     pub(crate) list: Vec<Range<u64>>,
     pub(crate) dist_from_center: isize,
@@ -34,7 +36,6 @@ pub(crate) fn iter_by_importance(range_list: Vec<Range<u64>>) -> RangeListIterat
         mul: 1,
     }
 }
-
 
 pub(crate) fn correct_for_capacity(
     needed_from_src: Vec<Range<u64>>,
@@ -76,14 +77,17 @@ pub(super) fn ranges_we_can_take(src: &Store, target: &Store) -> Vec<Range<u64>>
     let mut taking = Vec::with_capacity(range_list.len());
 
     let center = range_currently_being_read;
-    let start = center;
-    let end = range_list.len().min(center + target.n_supported_ranges());
-    taking.extend_from_slice(&range_list[start..end]);
+    if let MaybeLimited::Limited(n) = target.n_supported_ranges() {
+        let end = range_list.len().min(center.saturating_add(n.get()));
+        taking.extend_from_slice(&range_list[center..end]);
 
-    let n_left = target.n_supported_ranges().saturating_sub(taking.len());
-    let end = center;
-    let start = center.saturating_sub(n_left);
-    taking.extend_from_slice(&range_list[start..end]);
+        let n_left = n.get().saturating_sub(taking.len());
+        let start = center.saturating_sub(n_left);
+        taking.extend_from_slice(&range_list[start..center]);
+    } else {
+        taking.extend_from_slice(&range_list[center..]);
+        taking.extend_from_slice(&range_list[..center]);
+    };
 
     taking
 }

@@ -161,7 +161,9 @@ pub(crate) fn new_unlimited_mem_backed(
 impl StoreWriter {
     #[instrument(level = "trace", skip(self, buf))]
     pub(crate) async fn write_at(&mut self, buf: &[u8], pos: u64) -> Result<NonZeroUsize, Error> {
+        dbg!("waiting");
         self.capacity_watcher.wait_for_space().await;
+        dbg!("done");
         // if a migration happens while we are here then we could get
         // into store::write_at, without it having free capacity.
         // In that case write_at will return zero (which is fine)
@@ -224,7 +226,7 @@ impl StoreReader {
     }
 
     /// refers to the size of the stream if it was complete
-    pub(crate) fn size(&self) -> Size {
+    pub(crate) fn stream_size(&self) -> Size {
         self.stream_size.clone()
     }
 }
@@ -275,7 +277,7 @@ macro_rules! forward_impl {
 forward_impl!(pub(crate) gapless_from_till, pos: u64, last_seek: u64; bool);
 forward_impl!(pub(crate) ranges,; RangeSet<u64>);
 forward_impl!(last_read_pos,; u64);
-forward_impl!(n_supported_ranges,; usize);
+forward_impl!(n_supported_ranges,; crate::util::MaybeLimited<NonZeroUsize>);
 
 impl Store {
     /// capacity_watch can be left out when migrating as migration

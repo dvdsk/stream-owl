@@ -22,7 +22,7 @@ pub struct Reader {
     last_seek: u64,
     minimum_size: u64,
     #[derivative(Debug = "ignore")]
-    store: OwnedMutexGuard<StoreReader>,
+    store_reader: OwnedMutexGuard<StoreReader>,
     curr_pos: u64,
 }
 
@@ -31,11 +31,11 @@ pub struct Reader {
 pub struct CouldNotCreateRuntime(io::Error);
 
 impl Reader {
-    #[instrument(level = "trace", skip(store))]
+    #[instrument(level = "trace", skip(store_reader))]
     pub(crate) fn new(
         prefetch: usize,
         seek_tx: mpsc::Sender<u64>,
-        store: OwnedMutexGuard<StoreReader>,
+        store_reader: OwnedMutexGuard<StoreReader>,
     ) -> Result<Self, CouldNotCreateRuntime> {
         Ok(Self {
             rt: Runtime::new().map_err(CouldNotCreateRuntime)?,
@@ -43,7 +43,7 @@ impl Reader {
             seek_tx,
             last_seek: 0,
             minimum_size: 0,
-            store,
+            store_reader,
             curr_pos: 0,
         })
     }
@@ -63,17 +63,17 @@ fn stream_ended(_: tokio::sync::mpsc::error::SendError<u64>) -> io::Error {
 impl Reader {
     #[instrument(level = "trace", skip(self))]
     fn absolute_pos(&mut self, rel_pos: io::SeekFrom) -> io::Result<u64> {
-        let just_started = self.store.size().requests_analyzed() < 1;
+        let just_started = self.store_reader.stream_size().requests_analyzed() < 1;
 
         Ok(match rel_pos {
             io::SeekFrom::Start(bytes) => bytes,
             io::SeekFrom::Current(bytes) => self.curr_pos + bytes as u64,
             io::SeekFrom::End(bytes) => {
-                let size = match self.store.size().known() {
+                let size = match self.store_reader.stream_size().known() {
                     Some(size) => size,
                     None if just_started => self
-                        .store
-                        .size()
+                        .store_reader
+                        .stream_size()
                         .wait_for_known(&mut self.rt, Duration::from_secs(1))
                         .map_err(|_timeout| size_unknown())?,
                     None => Err(size_unknown())?,
@@ -84,7 +84,7 @@ impl Reader {
     }
 
     #[instrument(level = "trace", skip(self))]
-    fn make_client_seek(&mut self, pos: u64, store: &mut OwnedMutexGuard<Store>) -> io::Result<()> {
+    fn seek_in_stream(&mut self, pos: u64) -> io::Result<()> {
         self.seek_tx.blocking_send(pos).map_err(stream_ended)?;
         self.last_seek = pos;
         self.prefetch.reset();
@@ -93,7 +93,12 @@ impl Reader {
 }
 
 fn seek_is_into_undownloaded(pos: u64, store: &OwnedMutexGuard<Store>) -> bool {
-    !store.ranges().contains(&pos)
+    if store.ranges().contains(&pos) {
+        false
+    } else {
+        tracing::debug!("Seeking into undownloaded");
+        true
+    }
 }
 
 fn undownloaded_after_seek(pos: u64, stream_end: u64, store: &OwnedMutexGuard<Store>) -> bool {
@@ -117,28 +122,33 @@ fn undownloaded_not_being_downloaded(
 
 impl Seek for Reader {
     // this moves the seek in the stream
-    #[instrument(level = "debug", err)]
+    #[instrument(level = "debug", fields(absolute_pos))]
     fn seek(&mut self, rel_pos: io::SeekFrom) -> io::Result<u64> {
         let pos = self.absolute_pos(rel_pos)?;
+        tracing::Span::current().record("absolute_pos", pos);
+
         self.minimum_size = self.minimum_size.max(self.curr_pos);
         self.curr_pos = pos;
-        tracing::debug!("Seeking to: {rel_pos:?}, absolute pos: {pos:?}");
 
-        let mut store = self.store.curr_store.clone().blocking_lock_owned();
+        let store = self.store_reader.curr_store.clone().blocking_lock_owned();
         if seek_is_into_undownloaded(pos, &store) {
-            self.make_client_seek(pos, &mut store)?;
+            self.seek_in_stream(pos)?;
+            // if the writers where blocked by lack of space they 
+            // can write now. Since all the old can be overwritten
+            self.store_reader.capacity.send_available();
             return Ok(pos);
         }
 
-        let Some(stream_end) = self.store.size().known() else {
-            self.make_client_seek(pos, &mut store)?;
+        let Some(stream_end) = self.store_reader.stream_size().known() else {
+            self.seek_in_stream(pos)?;
             return Ok(pos);
         };
 
         if undownloaded_after_seek(pos, stream_end, &store)
             && undownloaded_not_being_downloaded(self.last_seek, pos, stream_end, &store)
         {
-            self.make_client_seek(pos, &mut store)?;
+            tracing::debug!("Undownloaded bytes after the new pos which are not being downloaded");
+            self.seek_in_stream(pos)?;
         }
 
         return Ok(pos);
@@ -153,7 +163,10 @@ impl Read for Reader {
         self.curr_pos += n_read1 as u64;
 
         let n_read2 = self.rt.block_on(async {
-            let res = self.store.read_at(&mut buf[n_read1..], self.curr_pos).await;
+            let res = self
+                .store_reader
+                .read_at(&mut buf[n_read1..], self.curr_pos)
+                .await;
             let bytes = match res {
                 Ok(bytes) => bytes,
                 Err(ReadError::EndOfStream) => return Ok(0),
@@ -165,7 +178,7 @@ impl Read for Reader {
             tracing::trace!("reader read: {bytes} bytes");
 
             self.prefetch
-                .perform_if_needed(&mut self.store, self.curr_pos, n_read1 + bytes)
+                .perform_if_needed(&mut self.store_reader, self.curr_pos, n_read1 + bytes)
                 .await?;
 
             Ok(bytes)

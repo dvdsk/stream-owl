@@ -1,11 +1,12 @@
 use std::thread;
 
 use tokio::runtime::{self, RuntimeFlavor};
-use tracing::{instrument, warn};
+use tracing::{instrument, warn, debug};
 
 use crate::StreamHandle;
 
 fn drop_in_new_thread(handle: &mut StreamHandle) {
+    debug!("dropping StreamHandle using new thread for async runtime");
     thread::scope(|s| {
         s.spawn(|| {
             let rt = match tokio::runtime::Runtime::new() {
@@ -24,6 +25,7 @@ fn drop_in_new_thread(handle: &mut StreamHandle) {
 }
 
 fn drop_in_current_rt(handle: &mut StreamHandle, rt: runtime::Handle) {
+    debug!("dropping StreamHandle using current runtime");
     tokio::task::block_in_place(move || {
         if let Err(err) = rt.block_on(handle.flush()) {
             warn!("Lost some progress, flushing storage failed: {err}")
@@ -32,6 +34,7 @@ fn drop_in_current_rt(handle: &mut StreamHandle, rt: runtime::Handle) {
 }
 
 fn drop_in_new_runtime(handle: &mut StreamHandle) {
+    debug!("dropping StreamHandle in new runtime in current thread");
     let rt = match tokio::runtime::Runtime::new() {
         Ok(rt) => rt,
         Err(e) => {

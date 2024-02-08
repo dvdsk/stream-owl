@@ -1,7 +1,7 @@
 use std::ops::Range;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use tracing::{instrument, trace};
+use tracing::{debug, info, instrument, trace};
 
 mod chunk_size;
 use chunk_size::ChunkSize;
@@ -57,8 +57,7 @@ impl StreamTarget {
     #[instrument(
         level = "trace",
         skip(self),
-        fields(closest_beyond_curr_pos, closest_to_start),
-        ret
+        fields(closest_beyond_curr_pos, closest_to_start)
     )]
     pub(crate) async fn next_range(&mut self, stream_size: &Size) -> Option<Range<u64>> {
         let chunk_size = self.chunk_size.calc() as u64;
@@ -95,7 +94,16 @@ impl StreamTarget {
             .map(limit_to_chunk_size);
         tracing_record!(closest_to_start);
 
-        closest_beyond_curr_pos.or(closest_to_start)
+        let result = closest_beyond_curr_pos.or(closest_to_start);
+        if let Some(ref range) = result {
+            debug!(
+                "next range to stream from server: {}..{}",
+                range.start, range.end
+            );
+        } else {
+            info!("no more data to stream from server");
+        }
+        result
     }
 }
 

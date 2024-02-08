@@ -60,7 +60,7 @@ impl CapacityWatcher {
     pub(crate) fn send_available(&mut self) {
         tracing::trace!("store has capacity again");
         self.has_free_capacity.store(true, Ordering::Release);
-        self.new_free_capacity.notify_waiters()
+        self.new_free_capacity.notify_waiters();
     }
 
     #[instrument(level = "trace", skip(self))]

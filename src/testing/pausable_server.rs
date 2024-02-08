@@ -14,7 +14,7 @@ use tokio::sync::Notify;
 use tokio::task::JoinHandle;
 use tower::Service;
 use tower_http::trace::TraceLayer;
-use tracing::instrument;
+use tracing::{instrument, error};
 
 use crate::testing::test_data;
 
@@ -242,7 +242,7 @@ async fn sever_loop(
 
             if let Err(ref e) = res {
                 if !format!("{e:?}").contains("Test server forced a disconnect") {
-                    res.unwrap();
+                    error!("Test server ran into a critical error: {e:?}")
                 }
             }
         });

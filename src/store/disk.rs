@@ -10,10 +10,10 @@ use tokio::fs::File;
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 use tracing::{debug, instrument};
 
+use crate::util::MaybeLimited;
 use crate::RangeUpdate;
 
 use self::progress::Progress;
-
 
 pub mod progress;
 
@@ -161,8 +161,8 @@ impl Disk {
         self.file_pos
     }
 
-    pub(super) fn n_supported_ranges(&self) -> usize {
-        usize::MAX
+    pub(super) fn n_supported_ranges(&self) -> MaybeLimited<NonZeroUsize> {
+        MaybeLimited::NotLimited
     }
 
     #[instrument(level = "debug")]

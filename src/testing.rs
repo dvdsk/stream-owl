@@ -80,6 +80,16 @@ pub enum TestEnded {
     TestDone,
 }
 
+impl TestEnded {
+    pub fn assert_no_errors(&self) {
+        match self {
+            TestEnded::ServerCrashed(_) => panic!("test server crashed"),
+            TestEnded::StreamReturned(Err(e)) => panic!("stream returned with error: {e}"),
+            _ => (),
+        }
+    }
+}
+
 impl PartialEq for TestEnded {
     fn eq(&self, other: &Self) -> bool {
         use TestEnded as T;

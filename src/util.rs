@@ -12,3 +12,8 @@ impl RangeLen for Range<u64> {
         self.end - self.start
     }
 }
+
+pub enum MaybeLimited<T> {
+    Limited(T),
+    NotLimited
+}

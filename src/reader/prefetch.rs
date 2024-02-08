@@ -55,7 +55,7 @@ impl Prefetch {
         store: &StoreReader,
     ) -> usize {
         let mut to_prefetch = self.buf.len() - already_read;
-        if let Some(stream_size) = store.size().known() {
+        if let Some(stream_size) = store.stream_size().known() {
             to_prefetch = to_prefetch.min((stream_size - curr_pos) as usize);
         }
         to_prefetch

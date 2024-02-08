@@ -5,6 +5,7 @@ use std::path::PathBuf;
 use rangemap::set::RangeSet;
 use tokio::sync::oneshot::error::RecvError;
 use tokio::sync::Mutex;
+use tracing::{debug, info};
 use tracing::{instrument, trace};
 
 use super::disk;
@@ -18,7 +19,7 @@ use crate::util::RangeLen;
 
 mod range_list;
 
-#[instrument(skip(store_writer), ret)]
+#[instrument(skip(store_writer))]
 pub(crate) async fn to_mem(
     store_writer: &mut StoreWriter,
     max_cap: NonZeroUsize,
@@ -31,7 +32,7 @@ pub(crate) async fn to_mem(
     migrate(store_writer, Store::MemLimited(mem)).await
 }
 
-#[instrument(skip(store_writer), ret)]
+#[instrument(skip(store_writer))]
 pub(crate) async fn to_unlimited_mem(store_writer: &mut StoreWriter) -> Result<(), MigrationError> {
     if let StoreVariant::MemUnlimited = store_writer.variant().await {
         return Ok(());
@@ -41,7 +42,7 @@ pub(crate) async fn to_unlimited_mem(store_writer: &mut StoreWriter) -> Result<(
     migrate(store_writer, Store::MemUnlimited(mem)).await
 }
 
-#[instrument(skip(store_writer), ret)]
+#[instrument(skip(store_writer))]
 pub(crate) async fn to_disk(
     store_writer: &mut StoreWriter,
     path: PathBuf,
@@ -72,7 +73,7 @@ pub enum MigrationError {
     Panic(RecvError),
 }
 
-#[instrument(skip_all, ret)]
+#[instrument(skip_all)]
 async fn migrate(store_writer: &mut StoreWriter, mut target: Store) -> Result<(), MigrationError> {
     let StoreWriter {
         curr_store,
@@ -80,8 +81,10 @@ async fn migrate(store_writer: &mut StoreWriter, mut target: Store) -> Result<()
         range_watch,
     } = store_writer;
     pre_migrate(&curr_store, &mut target).await?;
+    debug!("finished pre-migration, acquiring exclusive access to store");
     let mut curr = curr_store.lock().await;
     finish_migration(&mut curr, &mut target).await?;
+    debug!("finished data migration");
 
     let target_ref = &mut target;
     std::mem::swap(&mut *curr, target_ref);
@@ -89,12 +92,15 @@ async fn migrate(store_writer: &mut StoreWriter, mut target: Store) -> Result<()
 
     let old_ranges = old.ranges();
     capacity_watcher.re_init_from(curr.can_write());
+
+    debug!("updating callbacks and range_watch");
     range_watch.send_diff(old_ranges, curr.ranges());
 
+    info!("migration done");
     Ok(())
 }
 
-#[instrument(skip_all, ret, err)]
+#[instrument(skip_all)]
 async fn pre_migrate(curr: &Mutex<Store>, target: &mut Store) -> Result<(), MigrationError> {
     let mut buf = Vec::with_capacity(4096);
     let mut on_target = RangeSet::new();
@@ -110,7 +116,6 @@ async fn pre_migrate(curr: &Mutex<Store>, target: &mut Store) -> Result<(), Migr
         trace!("copying range missing on target: {missing:?}");
         let len = missing.len().min(4096);
         buf.resize(len as usize, 0u8);
-        // TODO this read should not change the src capacity
         src.read_at(&mut buf, missing.start, None)
             .await
             .map_err(MigrationError::PreMigrateRead)?;
@@ -124,7 +129,7 @@ async fn pre_migrate(curr: &Mutex<Store>, target: &mut Store) -> Result<(), Migr
     }
 }
 
-#[instrument(skip_all, ret)]
+#[instrument(skip_all)]
 async fn finish_migration(curr: &mut Store, target: &mut Store) -> Result<(), MigrationError> {
     let mut buf = Vec::with_capacity(4096);
     let mut on_disk = RangeSet::new();
@@ -148,7 +153,6 @@ async fn finish_migration(curr: &mut Store, target: &mut Store) -> Result<(), Mi
 }
 
 /// return a range that exists in b but not in a
-#[instrument(level = "debug", ret)]
 fn missing(a: &RangeSet<u64>, b: &RangeSet<u64>) -> Option<Range<u64>> {
     let mut in_b = b.iter();
     loop {

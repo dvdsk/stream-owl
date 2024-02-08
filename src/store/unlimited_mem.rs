@@ -7,6 +7,7 @@ use tracing::debug;
 use rangemap::set::RangeSet;
 
 use crate::RangeUpdate;
+use crate::util::MaybeLimited;
 
 mod range_store;
 use range_store::RangeStore;
@@ -85,7 +86,7 @@ impl Memory {
     pub(super) fn last_read_pos(&self) -> u64 {
         self.last_read_pos
     }
-    pub(super) fn n_supported_ranges(&self) -> usize {
-        usize::MAX
+    pub(super) fn n_supported_ranges(&self) -> MaybeLimited<NonZeroUsize> {
+        MaybeLimited::NotLimited
     }
 }

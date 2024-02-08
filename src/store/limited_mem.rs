@@ -6,7 +6,7 @@ use tracing::instrument;
 
 use rangemap::set::RangeSet;
 
-use crate::util::{RangeLen, VecDequeExt};
+use crate::util::{MaybeLimited, RangeLen, VecDequeExt};
 use crate::RangeUpdate;
 
 #[derive(Derivative)]
@@ -79,9 +79,13 @@ impl Memory {
         self.free_capacity -= written;
         self.range.end += written as u64;
 
-        let update = RangeUpdate::Changed {
-            prev: removed,
-            new: self.range.clone(),
+        let update = if removed.is_empty() {
+            RangeUpdate::Added(self.range.clone())
+        } else {
+            RangeUpdate::Replaced {
+                removed,
+                new: self.range.clone(),
+            }
         };
         let written =
             NonZeroUsize::new(to_write).expect("just checked if there is capacity to write");
@@ -114,7 +118,7 @@ impl Memory {
     pub(super) fn last_read_pos(&self) -> u64 {
         self.last_read_pos
     }
-    pub(super) fn n_supported_ranges(&self) -> usize {
-        1
+    pub(super) fn n_supported_ranges(&self) -> MaybeLimited<NonZeroUsize> {
+        MaybeLimited::Limited(NonZeroUsize::new(1).expect("1 is not zero"))
     }
 }

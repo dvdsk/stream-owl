@@ -2,16 +2,19 @@ use std::io::{Read, Seek};
 use std::num::NonZeroUsize;
 use std::sync::Arc;
 
-use stream_owl::testing::{Action, ServerControls, ConnControls, Event, TestEnded};
+use stream_owl::testing::{Action, ConnControls, Event, ServerControls, TestEnded};
 use stream_owl::{testing, StreamBuilder};
 use tokio::sync::Notify;
 
 #[test]
 fn migrate_to_disk() {
+    testing::setup_tracing();
+
     let test_dl_path = stream_owl::testing::gen_file_path();
     let configure = |b: StreamBuilder<false>| {
         b.with_prefetch(0)
-            .to_limited_mem(NonZeroUsize::new(2000).unwrap())
+            .to_unlimited_mem()
+            .with_fixed_chunk_size(NonZeroUsize::new(1000).unwrap())
     };
 
     let conn_controls = ConnControls::new(Vec::new());
@@ -52,5 +55,29 @@ fn migrate_to_disk() {
         test_data[0..1000].copy_from_slice(&[0; 1000]);
         test_data
     };
-    assert_eq!(downloaded, correct);
+    assert_eq_arrays(&downloaded, &correct)
+}
+
+fn assert_eq_arrays(downloaded: &[u8], correct: &[u8]) {
+    if downloaded == correct {
+        return;
+    }
+
+    for (i, (d, c)) in downloaded
+        .into_iter()
+        .copied()
+        .zip(correct.into_iter().copied())
+        .enumerate()
+    {
+        if d != c {
+            const C: usize = 5;
+            let start = i.saturating_sub(C);
+            let end = (i + C).min(downloaded.len());
+            let context = &downloaded[start..end];
+            panic!("downloaded not equal to correct at index: {i}
+                   context: 
+                   \tdownloaded[{start}..{end}] = {context:?}
+                   \tcorrect[{start}..{end}]    = {context:?}");
+        }
+    }
 }

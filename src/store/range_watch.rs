@@ -11,7 +11,7 @@ use crate::stream::{Report, ReportTx};
 #[derive(Debug, Clone)]
 pub enum RangeUpdate {
     /* TODO: rename prev to removed <dvdsk> */
-    Changed { prev: Range<u64>, new: Range<u64> },
+    Replaced { removed: Range<u64>, new: Range<u64> },
     Removed(Range<u64>),
     Added(Range<u64>),
     StreamClosed,
@@ -57,8 +57,8 @@ impl Receiver {
                 unreachable!("Receiver and Sender should drop at the same time")
             };
             match update {
-                RangeUpdate::Changed { prev, new } => {
-                    self.ranges.remove(prev);
+                RangeUpdate::Replaced { removed, new } => {
+                    self.ranges.remove(removed);
                     self.ranges.insert(new);
                 }
                 RangeUpdate::Removed(range) => self.ranges.remove(range),
@@ -71,6 +71,13 @@ impl Receiver {
 
 impl Sender {
     pub(super) fn send(&self, update: RangeUpdate) {
+        match &update {
+            RangeUpdate::Replaced { removed: prev, new } => assert!(!prev.is_empty() && !new.is_empty()),
+            RangeUpdate::Removed(r) => assert!(!r.is_empty()),
+            RangeUpdate::Added(r) => assert!(!r.is_empty()),
+            RangeUpdate::StreamClosed => (),
+        }
+
         tracing::trace!("sending range update: {update:?}");
         if let Err(_) = self.watch_sender.send(update.clone()) {
             tracing::debug!("Could not send new range, receiver dropped");

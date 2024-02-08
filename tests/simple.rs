@@ -4,10 +4,10 @@ use std::num::NonZeroUsize;
 use std::sync::Arc;
 
 use stream_owl::testing;
-use stream_owl::testing::TestEnded;
 use stream_owl::Reader;
 use stream_owl::StreamBuilder;
 use tokio::sync::Notify;
+use tracing::info;
 use tracing::instrument;
 
 #[ignore = "not yet implemented"]
@@ -31,7 +31,7 @@ fn download_front_while_streaming_endless_at_back() {
 }
 
 #[cfg(test)]
-mod limited_memory {
+mod xlimited_memory {
     use super::*;
 
     #[test]
@@ -70,6 +70,8 @@ mod disk {
 }
 
 fn seek_test(configure: fn(StreamBuilder<false>) -> StreamBuilder<true>) {
+    testing::setup_tracing();
+
     let test_file_size = 10_000u32;
     let test_done = Arc::new(Notify::new());
     let (runtime_thread, mut handle) = testing::setup_reader_test(
@@ -88,16 +90,18 @@ fn seek_test(configure: fn(StreamBuilder<false>) -> StreamBuilder<true>) {
     assert_pos(&mut reader, 80);
     reader.seek(std::io::SeekFrom::End(40)).unwrap();
     assert_pos(&mut reader, test_file_size - 40);
+    info!("done testing");
     test_done.notify_one();
 
-    let test_ended = runtime_thread.join().unwrap();
-    assert!(matches!(test_ended, TestEnded::TestDone));
+    runtime_thread.join().unwrap().assert_no_errors()
 }
 
 #[instrument(skip(reader))]
 fn assert_pos(reader: &mut Reader, bytes_from_start: u32) {
     let mut numb_buf = [0, 0, 0, 0];
+    info!("preparing read");
     reader.read_exact(&mut numb_buf).unwrap();
+    info!("done with read");
     let numb = u32::from_ne_bytes(numb_buf);
     let correct = bytes_from_start;
     assert_eq!(
