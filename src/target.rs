@@ -48,6 +48,7 @@ impl StreamTarget {
         trace!("set stream target position to: {pos}");
     }
 
+    #[instrument(level="trace", skip(self))]
     pub(crate) fn increase_pos(&self, bytes: usize) {
         let prev = self.pos.fetch_add(bytes as u64, Ordering::Release);
         let new = prev + bytes as u64;
@@ -108,27 +109,27 @@ impl StreamTarget {
 }
 
 impl StreamTarget {
+    /// can be cancelled at any time by a (stream) seek
     #[instrument(level = "trace", skip(self, buf), fields(buf_len = buf.len()))]
     pub(crate) async fn append(&mut self, buf: &[u8]) -> Result<usize, std::io::Error> {
-        // only this function modifies pos,
-        // only need to read threads own writes => relaxed ordering
-        let mut written = 0;
+        let mut total_written = 0;
 
-        while written < buf.len() {
+        while total_written < buf.len() {
             let res = self
                 .store
-                .write_at(buf, self.pos.load(Ordering::Relaxed))
+                .write_at(buf, self.pos.load(Ordering::Acquire))
                 .await;
 
-            written += match res {
-                Ok(bytes) => bytes.get(),
+            let just_written = match res {
+                Ok(bytes) => bytes,
                 Err(other) => {
                     todo!("handle other error: {other:?}")
                 }
             };
+            self.increase_pos(just_written);
+            total_written += just_written;
         }
 
-        self.increase_pos(written);
-        Ok(written)
+        Ok(total_written)
     }
 }
