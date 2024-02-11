@@ -2,6 +2,7 @@ use derivative::Derivative;
 use futures::FutureExt;
 use futures_concurrency::future::Race;
 use rangemap::RangeSet;
+use std::future::pending;
 use std::num::{NonZeroU64, NonZeroUsize};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -159,11 +160,11 @@ pub(crate) fn new_unlimited_mem_backed(
 }
 
 impl StoreWriter {
+    /// Note this is not an implementation of the std::io::Write tait. Ok(0) does
+    /// **not** mean we will never be able to write again.
     #[instrument(level = "trace", skip(self, buf))]
-    pub(crate) async fn write_at(&mut self, buf: &[u8], pos: u64) -> Result<NonZeroUsize, Error> {
-        dbg!("waiting");
+    pub(crate) async fn write_at(&mut self, buf: &[u8], pos: u64) -> Result<usize, Error> {
         self.capacity_watcher.wait_for_space().await;
-        dbg!("done");
         // if a migration happens while we are here then we could get
         // into store::write_at, without it having free capacity.
         // In that case write_at will return zero (which is fine)
@@ -194,6 +195,7 @@ impl StoreReader {
     #[tracing::instrument(level = "trace", skip(buf), fields(buf_len = buf.len()), ret)]
     pub(crate) async fn read_at(&mut self, buf: &mut [u8], pos: u64) -> Result<usize, ReadError> {
         enum Res {
+            StreamWasClosed,
             RangeReady,
             PosBeyondEOF,
         }
@@ -208,20 +210,26 @@ impl StoreReader {
         //  - a migration will never remove the byte directly after pos
         //  - a new write can not free up the byte at pos
         // Thus the write will never return 0 bytes read when it passes wait_for_range.
-        let wait_for_range = curr_range.wait_for(pos).map(|_| Res::RangeReady);
         let watch_eof_pos = stream_size.eof_smaller_then(pos).map(|_| Res::PosBeyondEOF);
-        let res = (wait_for_range, watch_eof_pos).race().await;
+        let wait_for_range = curr_range.wait_for(pos).map(|res| match res {
+            Ok(_) => Res::RangeReady,
+            Err(_) => Res::StreamWasClosed,
+        });
 
-        if let Res::PosBeyondEOF = res {
-            Err(ReadError::EndOfStream)
-        } else {
-            let n_read = self
-                .curr_store
-                .lock()
-                .await
-                .read_at(buf, pos, Some(&mut self.capacity))
-                .await?;
-            Ok(n_read)
+        let res = (wait_for_range, watch_eof_pos).race().await;
+        match res {
+            Res::PosBeyondEOF => Err(ReadError::EndOfStream),
+            // this future should get cancelled now
+            Res::StreamWasClosed => pending().await,
+            Res::RangeReady => {
+                let n_read = self
+                    .curr_store
+                    .lock()
+                    .await
+                    .read_at(buf, pos, Some(&mut self.capacity))
+                    .await?;
+                Ok(n_read)
+            }
         }
     }
 
@@ -288,12 +296,12 @@ impl Store {
         buf: &[u8],
         pos: u64,
         capacity_watch: Option<&mut CapacityWatcher>,
-    ) -> Result<(NonZeroUsize, RangeUpdate), Error> {
+    ) -> Result<(usize, RangeUpdate), Error> {
         match self {
             Store::Disk(inner) => inner.write_at(buf, pos).await.map_err(Error::Disk),
             Store::MemLimited(inner) => {
                 let res = inner.write_at(buf, pos).await;
-                if inner.free_capacity == 0 {
+                if inner.available_for_writing == 0 {
                     if let Some(capacity_watch) = capacity_watch {
                         capacity_watch.out_of_capacity();
                     }
@@ -317,7 +325,7 @@ impl Store {
             Self::MemLimited(inner) => {
                 let n_read = inner.read_at(buf, pos);
                 if let Some(capacity) = update_capacity {
-                    if inner.free_capacity > 0 {
+                    if inner.available_for_writing > 0 {
                         capacity.send_available()
                     }
                 }
@@ -330,9 +338,10 @@ impl Store {
     fn capacity(&self) -> CapacityBounds {
         match self {
             Store::Disk(_) => CapacityBounds::Unlimited,
-            Store::MemLimited(inner) => {
-                CapacityBounds::Limited(inner.buffer_cap.try_into().unwrap_or(NonZeroU64::MAX))
-            }
+            Store::MemLimited(inner) => CapacityBounds::Limited(
+                NonZeroU64::new(inner.capacity() as u64)
+                    .expect("LimitedMem capacity is set via NonZeroU64"),
+            ),
             Store::MemUnlimited(_) => CapacityBounds::Unlimited,
         }
     }
@@ -340,7 +349,7 @@ impl Store {
     fn can_write(&self) -> bool {
         match self {
             Store::Disk(_) => true,
-            Store::MemLimited(inner) => inner.free_capacity > 0,
+            Store::MemLimited(inner) => inner.available_for_writing > 0,
             Store::MemUnlimited(_) => true,
         }
     }

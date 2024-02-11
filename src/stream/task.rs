@@ -120,9 +120,7 @@ async fn stream_all(
     let builder = client_without_range.builder();
     let receive_seek = seek_rx.recv().map(Res2::Seek);
     let mut reader = client_without_range.into_reader();
-    let write = reader
-        .stream_to_writer(target, None, timeout)
-        .map(Res2::Write);
+    let write = reader.stream_to_writer(target, timeout).map(Res2::Write);
 
     let pos = match (write, receive_seek).race().await {
         Res2::Seek(Some(pos)) => pos,
@@ -232,9 +230,8 @@ async fn process_one_stream(
     timeout: Duration,
 ) -> Result<Option<StreamingClient>, Error> {
     let mut reader = client.into_reader();
-    let max_to_stream = target.chunk_size.get();
     reader
-        .stream_to_writer(target, Some(max_to_stream), timeout)
+        .stream_to_writer(target, timeout)
         .await
         .map_err(Error::HttpClient)?;
 

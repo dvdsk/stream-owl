@@ -45,13 +45,6 @@ impl ChunkSize {
             ChunkSize::Fixed(size) => *size,
         }
     }
-
-    pub(crate) fn get(&self) -> usize {
-        match self {
-            ChunkSize::Dynamic { last, .. } => *last,
-            ChunkSize::Fixed(size) => *size,
-        }
-    }
 }
 
 fn update_dynamic(max: Option<usize>, last: &mut usize) -> usize {

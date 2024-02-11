@@ -133,7 +133,7 @@ impl Seek for Reader {
         let store = self.store_reader.curr_store.clone().blocking_lock_owned();
         if seek_is_into_undownloaded(pos, &store) {
             self.seek_in_stream(pos)?;
-            // if the writers where blocked by lack of space they 
+            // if the writers where blocked by lack of space they
             // can write now. Since all the old can be overwritten
             self.store_reader.capacity.send_available();
             return Ok(pos);

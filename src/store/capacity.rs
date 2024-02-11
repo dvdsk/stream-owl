@@ -4,6 +4,23 @@
 ///  - Before the writer calls `CapacityWatcher::wait_for_space` the store its
 ///    writing too has updated the capacity using `Capacity::remove`.
 ///
+/// ** The normal situation **
+///
+/// #########      (succeeded now)     #########        (blocked)
+/// # write # -- out_of_capacity() --> # write # -> wait_for_space()
+/// #########                          #########             |
+///                                                         |
+/// ########                                                V
+/// # read # --- send_available --------------------> unblocks writer
+/// ########
+///
+/// ** Seek **
+///
+/// #########                          #########        (blocked)
+/// # write # -- out_of_capacity() --> # write # -> wait_for_space() 
+/// #########                          #########
+///
+///
 use std::num::NonZeroU64;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -36,6 +53,7 @@ impl CapacityWatcher {
     pub(crate) async fn wait_for_space(&self) {
         let new_free_capacity = self.new_free_capacity.notified();
         if self.has_free_capacity.load(Ordering::Acquire) {
+            dbg!(std::thread::sleep(std::time::Duration::from_secs(1)));
             return;
         }
 
@@ -47,7 +65,7 @@ impl CapacityWatcher {
     pub(crate) fn re_init_from(&self, can_write: bool) {
         self.has_free_capacity.store(can_write, Ordering::Release);
         if can_write {
-            self.new_free_capacity.notify_waiters()
+            self.new_free_capacity.notify_one()
         }
     }
 
@@ -60,7 +78,7 @@ impl CapacityWatcher {
     pub(crate) fn send_available(&mut self) {
         tracing::trace!("store has capacity again");
         self.has_free_capacity.store(true, Ordering::Release);
-        self.new_free_capacity.notify_waiters();
+        self.new_free_capacity.notify_one();
     }
 
     #[instrument(level = "trace", skip(self))]

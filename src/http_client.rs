@@ -194,14 +194,20 @@ impl ClientBuilder {
             mut size,
         } = self;
 
-        let Range { start, end } = target
+        let requested_range = target
             .next_range(&size)
             .await
             .expect("should be a range to get after seek or on connect");
-        let first_range = format!("bytes={start}-{end}");
+        let first_range = format!("bytes={}-{}", requested_range.start, requested_range.end);
 
-        let mut conn =
-            Connection::new(&url, &restriction, &bandwidth_lim, report_tx.clone(), timeout).await?;
+        let mut conn = Connection::new(
+            &url,
+            &restriction,
+            &bandwidth_lim,
+            report_tx.clone(),
+            timeout,
+        )
+        .await?;
         let mut response = conn
             .send_initial_request(&url, &cookies, &first_range, timeout)
             .await?;
@@ -217,8 +223,14 @@ impl ClientBuilder {
             url = redirect_url(response)?;
             if url.host() != prev_url.host() {
                 prev_url = url.clone();
-                conn =
-                    Connection::new(&url, &restriction, &bandwidth_lim, report_tx.clone(), timeout).await?;
+                conn = Connection::new(
+                    &url,
+                    &restriction,
+                    &bandwidth_lim,
+                    report_tx.clone(),
+                    timeout,
+                )
+                .await?;
             }
             response = conn
                 .send_initial_request(&url, &cookies, &first_range, timeout)
@@ -230,7 +242,7 @@ impl ClientBuilder {
         }
 
         use ValidResponse::*;
-        let response = ValidResponse::try_from(response)?;
+        let response = ValidResponse::from_hyper_and_range(response, requested_range)?;
         let host = url.host().unwrap().parse().unwrap();
         size.update(&response);
 
@@ -305,14 +317,14 @@ impl Client {
     #[tracing::instrument(level = "debug", err)]
     pub(crate) async fn try_get_range(
         mut self,
-        Range { start, end }: Range<u64>,
+        requested_range: Range<u64>,
         timeout: Duration,
     ) -> Result<StreamingClient, error::Error> {
-        assert!(Some(start) < self.stream_size().known());
+        assert!(Some(requested_range.start) < self.stream_size().known());
 
-        let range = format!("bytes={start}-{end}");
+        let range = format!("bytes={}-{}", requested_range.start, requested_range.end);
         let response = self.send_range_request(&range, timeout).await?;
-        let response = ValidResponse::try_from(response)?;
+        let response = ValidResponse::from_hyper_and_range(response, requested_range)?;
 
         self.size.update(&response);
         match response {

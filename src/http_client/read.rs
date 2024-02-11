@@ -1,4 +1,3 @@
-use std::collections::VecDeque;
 use std::ops::Range;
 use std::time::Duration;
 
@@ -17,7 +16,6 @@ use super::{error::Error, Client};
 pub(crate) struct InnerReader {
     stream: Incoming,
     client: Client,
-    buffer: VecDeque<u8>,
 }
 
 #[derive(Debug)]
@@ -75,13 +73,12 @@ impl Reader {
     pub(crate) async fn stream_to_writer(
         &mut self,
         target: &mut StreamTarget,
-        max: Option<usize>,
         timeout: Duration,
     ) -> Result<(), Error> {
         if let Reader::PartialData { range, .. } = self {
             target.set_pos(range.start)
         }
-        self.inner().stream_to_writer(target, max, timeout).await
+        self.inner().stream_to_writer(target, timeout).await
     }
 }
 
@@ -90,71 +87,22 @@ impl InnerReader {
         Self {
             stream,
             client,
-            buffer: VecDeque::new(),
         }
     }
 
-    /// async cancel safe, any bytes read will be written or bufferd by the reader
-    /// if you want to track the number of bytes written use a wrapper around the writer
     #[tracing::instrument(level = "trace", skip_all)]
     pub(crate) async fn stream_to_writer(
         &mut self,
         output: &mut StreamTarget,
-        max: Option<usize>,
         timeout: Duration,
     ) -> Result<(), Error> {
-        let max = max.unwrap_or(usize::MAX);
-        let mut n_read = 0usize;
-
-        if !self.buffer.is_empty() {
-            n_read += self.write_from_buffer(max, output).await?;
-        }
-
-        while n_read < max {
-            // cancel safe: not a problem if a frame is lost as long as
-            // we do not mark them as written
+        loop {
             let Some(data) = get_next_data_frame(&mut self.stream, timeout).await? else {
                 return Ok(());
             };
 
-            // n_read is never larger then max
-            let split = data.len().min(max - n_read);
-            let (to_write, to_store) = data.split_at(split);
-
-            output.append(to_write).await.map_err(Error::WritingData)?;
-            n_read += to_write.len();
-            self.buffer.extend(to_store);
+            output.append(&data).await.map_err(Error::WritingData)?;
         }
-
-        Ok(())
-    }
-
-    // Is cancel safe, no bytes will be removed from buffer before
-    // they are written. Returns number of bytes written
-    #[tracing::instrument(level = "trace", skip(output, self), ret)]
-    async fn write_from_buffer(
-        &mut self,
-        max: usize,
-        output: &mut StreamTarget,
-    ) -> Result<usize, Error> {
-        let to_take = self.buffer.len().min(max);
-        let from_buffer: Vec<_> = self.buffer.range(0..to_take).copied().collect();
-        let mut to_write = from_buffer.as_slice();
-        let mut total_written = 0;
-        Ok(loop {
-            let just_written = output
-                .append(&from_buffer)
-                .await
-                .map_err(Error::WritingData)?;
-            // remove only what we wrote to prevent losing data on cancel
-            self.buffer.drain(0..just_written);
-            to_write = &to_write[just_written..];
-
-            total_written += just_written;
-            if to_write.is_empty() {
-                break total_written;
-            }
-        })
     }
 }
 

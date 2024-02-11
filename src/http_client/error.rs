@@ -1,3 +1,6 @@
+use std::io;
+use std::ops::Range;
+
 use http;
 use http::header;
 use http::header::InvalidHeaderValue;
@@ -79,28 +82,28 @@ impl Error {
     /// taking too long?
     pub fn is_external_timeout(&self) -> bool {
         match self {
-            Error::Response(_) => false,
-            Error::Http(_) => false,
-            Error::SocketCreation(_) => false,
-            Error::Restricting(_) => false,
-            Error::Connecting(_) => todo!(),
-            Error::SocketConfig(_) => false,
-            Error::DnsResolve(e) => {
-                matches!(e.kind(), hickory_resolver::error::ResolveErrorKind::Timeout)
-            }
-            Error::DnsEmpty => false,
-            Error::UrlWithoutHost => false,
-            Error::StatusNotOk { .. } => false,
-            Error::InvalidHost(_) => false,
-            Error::MissingRedirectLocation => false,
-            Error::BrokenRedirectLocation(_) => false,
-            Error::InvalidUriRedirectLocation(_) => false,
-            Error::TooManyRedirects => false,
-            Error::MissingFrame => false,
             Error::SendingRequest(e) => matches!(e, SendingRequest::TimedOut),
             Error::Handshake(e) => matches!(e, Handshake::TimedOut),
             Error::ReadingBody(e) => matches!(e, ReadingBody::TimedOut),
-            Error::WritingData(_) => false,
+            Error::DnsResolve(e) => {
+                matches!(e.kind(), hickory_resolver::error::ResolveErrorKind::Timeout)
+            }
+            Error::Connecting(e) => e.kind() == io::ErrorKind::TimedOut,
+            Error::Response(_)
+            | Error::Http(_)
+            | Error::SocketCreation(_)
+            | Error::Restricting(_)
+            | Error::SocketConfig(_)
+            | Error::DnsEmpty
+            | Error::UrlWithoutHost
+            | Error::StatusNotOk { .. }
+            | Error::InvalidHost(_)
+            | Error::MissingRedirectLocation
+            | Error::BrokenRedirectLocation(_)
+            | Error::InvalidUriRedirectLocation(_)
+            | Error::TooManyRedirects
+            | Error::MissingFrame
+            | Error::WritingData(_) => false,
         }
     }
 }

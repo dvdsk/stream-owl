@@ -109,7 +109,7 @@ impl Disk {
         &mut self,
         buf: &[u8],
         pos: u64,
-    ) -> Result<(NonZeroUsize, RangeUpdate), Error> {
+    ) -> Result<(usize, RangeUpdate), Error> {
         if pos != self.last_write {
             self.seek_for_write(pos).await?;
         } else if pos != self.file_pos {
@@ -127,10 +127,7 @@ impl Disk {
             self.flush().await?;
         }
 
-        Ok((
-            NonZeroUsize::new(written).expect("File should always accept more bytes"),
-            range_update,
-        ))
+        Ok((written, range_update))
     }
 
     #[instrument(level = "trace", skip(self, buf))]

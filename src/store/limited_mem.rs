@@ -1,12 +1,32 @@
+///
+/// while the buffer is double ended we abstract it as a single
+/// slice of memory.
+///
+/// the buffer:
+/// ------------------------------------------------------------------
+/// |                                                                |
+/// ------------------------------------------------------------------
+/// ^
+/// alreadyread
+///
+///
+///
+///
+///
+///
+///
+///
+///
+///
 use derivative::Derivative;
 use std::collections::{TryReserveError, VecDeque};
 use std::num::NonZeroUsize;
 use std::ops::Range;
-use tracing::instrument;
+use tracing::{debug, instrument, trace};
 
 use rangemap::set::RangeSet;
 
-use crate::util::{MaybeLimited, RangeLen, VecDequeExt};
+use crate::util::{MaybeLimited, VecDequeExt};
 use crate::RangeUpdate;
 
 #[derive(Derivative)]
@@ -14,8 +34,7 @@ use crate::RangeUpdate;
 pub(crate) struct Memory {
     #[derivative(Debug = "ignore")]
     buffer: VecDeque<u8>,
-    pub(super) buffer_cap: NonZeroUsize,
-    pub(super) free_capacity: usize,
+    pub(super) available_for_writing: usize,
     /// range of positions available, end non inclusive
     /// positions are measured from the absolute start of the stream
     range: Range<u64>,
@@ -33,50 +52,62 @@ pub struct CouldNotAllocate(#[from] TryReserveError);
 impl Memory {
     pub(super) fn new(max_cap: NonZeroUsize) -> Result<Self, CouldNotAllocate> {
         let mut buffer = VecDeque::new();
-        let buffer_cap = max_cap;
-
         buffer.try_reserve_exact(max_cap.get())?;
 
         Ok(Self {
             last_read_pos: 0,
             buffer,
-            buffer_cap,
-            free_capacity: max_cap.get(),
+            available_for_writing: 0,
             range: 0..0,
         })
     }
 
-    // waits until the reader has advanced far enough providing backpressure
-    // to the stream
+    pub(super) fn capacity(&self) -> usize {
+        self.buffer.capacity()
+    }
+
+    fn make_space_clearing_buffer(&mut self, pos: u64, data: &[u8]) -> (usize, Range<u64>) {
+        self.buffer.clear();
+        self.last_read_pos = pos;
+        let removed = self.range.clone();
+        self.range = pos..pos;
+        let to_write = data.len().min(self.buffer.capacity());
+        self.available_for_writing = self.buffer.capacity() - to_write;
+        (to_write, removed)
+    }
+
+    fn make_space_draining_read(&mut self, data: &[u8]) -> (usize, Range<u64>) {
+        let bytes_buf_can_grow = self.buffer.capacity() - self.buffer.len();
+        let to_free = self
+            .available_for_writing
+            .min(data.len().saturating_sub(bytes_buf_can_grow));
+        self.available_for_writing -= to_free;
+
+        self.buffer.drain(..to_free);
+        let removed = self.range.start..self.range.start + (to_free as u64);
+        self.range.start += to_free as u64;
+        let to_write = to_free + bytes_buf_can_grow;
+        (to_write, removed)
+    }
 
     /// `pos` must be the position of the first byte in buf in the stream.
     /// For the first write at the start this should be 0
     #[tracing::instrument(level="trace", skip(data), fields(buf_len = data.len()))]
-    pub(super) async fn write_at(&mut self, data: &[u8], pos: u64) -> (NonZeroUsize, RangeUpdate) {
+    pub(super) async fn write_at(&mut self, data: &[u8], pos: u64) -> (usize, RangeUpdate) {
         assert!(!data.is_empty());
         let to_write;
         let removed;
 
         if pos != self.range.end {
-            self.buffer.clear();
-            self.free_capacity = self.buffer.capacity();
-            self.last_read_pos = pos;
-            removed = self.range.clone();
-            self.range = pos..pos;
-            to_write = data.len().min(self.free_capacity);
+            debug!("making space by clearing the whole buffer");
+            (to_write, removed) = self.make_space_clearing_buffer(pos, data);
         } else {
-            to_write = data.len().min(self.free_capacity);
-            let free_in_buffer = self.buffer_cap.get() - self.buffer.len();
-            let to_remove = to_write.saturating_sub(free_in_buffer);
-            self.buffer.drain(..to_remove);
-            removed = self.range.start..self.range.start + (to_remove as u64);
-            self.range.start += removed.len() as u64;
+            trace!("making space by draining part of the buffer");
+            (to_write, removed) = self.make_space_draining_read(data);
         }
 
         self.buffer.extend(data[0..to_write].iter());
         let written = to_write;
-
-        self.free_capacity -= written;
         self.range.end += written as u64;
 
         let update = if removed.is_empty() {
@@ -87,22 +118,24 @@ impl Memory {
                 new: self.range.clone(),
             }
         };
-        let written =
-            NonZeroUsize::new(to_write).expect("just checked if there is capacity to write");
         (written, update)
     }
 
     /// we must only get here if there is data in the mem store for us
     #[instrument(skip(self, buf))]
     pub(super) fn read_at(&mut self, buf: &mut [u8], pos: u64) -> usize {
-        debug_assert!(pos >= self.range.start, "No data in store at offset: {pos}");
+        debug_assert!(
+            pos >= self.range.start,
+            "No data in store at offset: {pos}, range: {:?}",
+            self.range
+        );
 
         let relative_pos = pos - self.range.start;
-        let n_copied = self.buffer.copy_starting_at(relative_pos as usize, buf);
-        self.free_capacity += n_copied;
+        let n_read = self.buffer.copy_starting_at(relative_pos as usize, buf);
+        self.available_for_writing += n_read;
 
-        self.last_read_pos = pos;
-        n_copied
+        self.last_read_pos = pos + n_read as u64;
+        n_read
     }
     pub(super) fn ranges(&self) -> RangeSet<u64> {
         let mut res = RangeSet::new();

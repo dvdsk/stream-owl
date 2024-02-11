@@ -42,7 +42,7 @@ impl Memory {
         &mut self,
         buf: &[u8],
         pos: u64,
-    ) -> Result<(NonZeroUsize, RangeUpdate), CouldNotAllocate> {
+    ) -> Result<(usize, RangeUpdate), CouldNotAllocate> {
         assert!(!buf.is_empty());
         if pos != self.active_range.end {
             debug!("refusing write: position not at current range end, seek must be in progress");
@@ -57,8 +57,6 @@ impl Memory {
 
         self.active_range.end += written as u64;
         let update = RangeUpdate::Added(self.active_range.clone());
-        let written =
-            NonZeroUsize::new(written).expect("should never be passed a zero sized write");
         return Ok((written, update));
     }
 

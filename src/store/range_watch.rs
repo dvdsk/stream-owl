@@ -11,7 +11,10 @@ use crate::stream::{Report, ReportTx};
 #[derive(Debug, Clone)]
 pub enum RangeUpdate {
     /* TODO: rename prev to removed <dvdsk> */
-    Replaced { removed: Range<u64>, new: Range<u64> },
+    Replaced {
+        removed: Range<u64>,
+        new: Range<u64>,
+    },
     Removed(Range<u64>),
     Added(Range<u64>),
     StreamClosed,
@@ -47,32 +50,45 @@ pub(super) fn channel(report_tx: ReportTx) -> (Sender, Receiver) {
     )
 }
 
+pub(super) struct StreamWasClosed;
 impl Receiver {
+    fn process_update(&mut self, update: RangeUpdate) -> Result<(), StreamWasClosed> {
+        match update {
+            RangeUpdate::Replaced { removed, new } => {
+                self.ranges.remove(removed);
+                self.ranges.insert(new);
+            }
+            RangeUpdate::Removed(range) => self.ranges.remove(range),
+            RangeUpdate::Added(range) => self.ranges.insert(range),
+            RangeUpdate::StreamClosed => return Err(StreamWasClosed),
+        }
+        Ok(())
+    }
+
     /// blocks till at least one byte is available at `needed_pos`.
     #[instrument(level = "trace")]
-    pub(super) async fn wait_for(&mut self, needed_pos: u64) {
+    pub(super) async fn wait_for(&mut self, needed_pos: u64) -> Result<(), StreamWasClosed> {
+        while let Ok(old_update) = self.rx.try_recv() {
+            self.process_update(old_update)?;
+        }
+
         while !self.ranges.contains(&needed_pos) {
             trace!("blocking read until range available");
             let Some(update) = self.rx.recv().await else {
                 unreachable!("Receiver and Sender should drop at the same time")
             };
-            match update {
-                RangeUpdate::Replaced { removed, new } => {
-                    self.ranges.remove(removed);
-                    self.ranges.insert(new);
-                }
-                RangeUpdate::Removed(range) => self.ranges.remove(range),
-                RangeUpdate::Added(range) => self.ranges.insert(range),
-                RangeUpdate::StreamClosed => break,
-            }
+            self.process_update(update)?;
         }
+        Ok(())
     }
 }
 
 impl Sender {
     pub(super) fn send(&self, update: RangeUpdate) {
         match &update {
-            RangeUpdate::Replaced { removed: prev, new } => assert!(!prev.is_empty() && !new.is_empty()),
+            RangeUpdate::Replaced { removed: prev, new } => {
+                assert!(!prev.is_empty() && !new.is_empty())
+            }
             RangeUpdate::Removed(r) => assert!(!r.is_empty()),
             RangeUpdate::Added(r) => assert!(!r.is_empty()),
             RangeUpdate::StreamClosed => (),

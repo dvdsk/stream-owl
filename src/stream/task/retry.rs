@@ -269,7 +269,6 @@ impl Decider {
                     | StatusCode::GATEWAY_TIMEOUT,
                 ..
             } => self.register_or_reject(err, Backoff::fib(RETRY_SLOW, MAX_RETY_INTERVAL)),
-
             E::Response(_) | E::WritingData(_) => todo!(),
             E::Http(_)
             | E::Restricting(_)
