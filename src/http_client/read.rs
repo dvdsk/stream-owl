@@ -67,8 +67,6 @@ impl Reader {
         }
     }
 
-    /// async cancel safe, any bytes read will be written or bufferd by the reader
-    /// if you want to track the number of bytes written use a wrapper around the writer
     #[tracing::instrument(level = "trace", skip(target, self))]
     pub(crate) async fn stream_to_writer(
         &mut self,
@@ -78,31 +76,21 @@ impl Reader {
         if let Reader::PartialData { range, .. } = self {
             target.set_pos(range.start)
         }
-        self.inner().stream_to_writer(target, timeout).await
+
+        let stream = &mut self.inner().stream;
+        loop {
+            let Some(data) = get_next_data_frame(stream, timeout).await? else {
+                return Ok(());
+            };
+
+            target.append(&data).await.map_err(Error::WritingData)?;
+        }
     }
 }
 
 impl InnerReader {
     pub(crate) fn new(stream: Incoming, client: Client) -> Self {
-        Self {
-            stream,
-            client,
-        }
-    }
-
-    #[tracing::instrument(level = "trace", skip_all)]
-    pub(crate) async fn stream_to_writer(
-        &mut self,
-        output: &mut StreamTarget,
-        timeout: Duration,
-    ) -> Result<(), Error> {
-        loop {
-            let Some(data) = get_next_data_frame(&mut self.stream, timeout).await? else {
-                return Ok(());
-            };
-
-            output.append(&data).await.map_err(Error::WritingData)?;
-        }
+        Self { stream, client }
     }
 }
 

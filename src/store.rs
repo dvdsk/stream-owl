@@ -301,8 +301,8 @@ impl Store {
             Store::Disk(inner) => inner.write_at(buf, pos).await.map_err(Error::Disk),
             Store::MemLimited(inner) => {
                 let res = inner.write_at(buf, pos).await;
-                if inner.available_for_writing == 0 {
-                    if let Some(capacity_watch) = capacity_watch {
+                if let Some(capacity_watch) = capacity_watch {
+                    if inner.available_for_writing == 0 {
                         capacity_watch.out_of_capacity();
                     }
                 }

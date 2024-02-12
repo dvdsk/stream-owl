@@ -88,6 +88,7 @@ fn seek_test(configure: fn(StreamBuilder<false>) -> StreamBuilder<true>) {
     reader.seek(std::io::SeekFrom::Start(40)).unwrap();
     assert_pos(&mut reader, 40);
     // note reading 4 bytes here shift curr poss by 4
+    reader.seek(std::io::SeekFrom::Current(36)).unwrap();
     assert_pos(&mut reader, 80);
     reader.seek(std::io::SeekFrom::End(40)).unwrap();
     assert_pos(&mut reader, test_file_size - 40);

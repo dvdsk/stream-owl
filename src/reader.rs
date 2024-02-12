@@ -93,12 +93,7 @@ impl Reader {
 }
 
 fn seek_is_into_undownloaded(pos: u64, store: &OwnedMutexGuard<Store>) -> bool {
-    if store.ranges().contains(&pos) {
-        false
-    } else {
-        tracing::debug!("Seeking into undownloaded");
-        true
-    }
+    !store.ranges().contains(&pos)
 }
 
 fn undownloaded_after_seek(pos: u64, stream_end: u64, store: &OwnedMutexGuard<Store>) -> bool {
@@ -132,6 +127,7 @@ impl Seek for Reader {
 
         let store = self.store_reader.curr_store.clone().blocking_lock_owned();
         if seek_is_into_undownloaded(pos, &store) {
+            tracing::debug!("Seek pos not yet in store: seeking in stream");
             self.seek_in_stream(pos)?;
             // if the writers where blocked by lack of space they
             // can write now. Since all the old can be overwritten
@@ -140,6 +136,8 @@ impl Seek for Reader {
         }
 
         let Some(stream_end) = self.store_reader.stream_size().known() else {
+            /* TODO: jump to end of downloaded bit <dvdsk noreply@davidsk.dev> */
+            tracing::debug!("Unknown stream end: seeking in stream");
             self.seek_in_stream(pos)?;
             return Ok(pos);
         };
@@ -147,10 +145,15 @@ impl Seek for Reader {
         if undownloaded_after_seek(pos, stream_end, &store)
             && undownloaded_not_being_downloaded(self.last_seek, pos, stream_end, &store)
         {
-            tracing::debug!("Undownloaded bytes after the new pos which are not being downloaded");
+            tracing::debug!(
+                "section after seek pos not yet in store and not being downloaded: seeking in stream"
+            );
+            /* TODO: jump to end of downloaded bit <dvdsk noreply@davidsk.dev> */
             self.seek_in_stream(pos)?;
+            return Ok(pos);
         }
 
+        tracing::debug!("No need to seek in stream");
         return Ok(pos);
     }
 }

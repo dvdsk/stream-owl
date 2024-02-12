@@ -53,7 +53,6 @@ impl CapacityWatcher {
     pub(crate) async fn wait_for_space(&self) {
         let new_free_capacity = self.new_free_capacity.notified();
         if self.has_free_capacity.load(Ordering::Acquire) {
-            dbg!(std::thread::sleep(std::time::Duration::from_secs(1)));
             return;
         }
 
@@ -79,11 +78,6 @@ impl CapacityWatcher {
         tracing::trace!("store has capacity again");
         self.has_free_capacity.store(true, Ordering::Release);
         self.new_free_capacity.notify_one();
-    }
-
-    #[instrument(level = "trace", skip(self))]
-    pub(crate) fn reset(&mut self) {
-        self.send_available()
     }
 }
 

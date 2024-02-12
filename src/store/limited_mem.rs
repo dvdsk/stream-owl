@@ -134,6 +134,11 @@ impl Memory {
         let n_read = self.buffer.copy_starting_at(relative_pos as usize, buf);
         self.available_for_writing += n_read;
 
+        tracing::info!(
+            "relative_pos: {relative_pos}, pos: {pos}, range_start: {}",
+            self.range.start
+        );
+        tracing::info!("buf: {:?}", buf);
         self.last_read_pos = pos + n_read as u64;
         n_read
     }

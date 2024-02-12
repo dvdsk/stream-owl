@@ -1,5 +1,4 @@
 use std::io;
-use std::ops::Range;
 
 use http;
 use http::header;
