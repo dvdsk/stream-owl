@@ -13,7 +13,7 @@ use crate::manager::Command;
 use crate::network::{BandwidthAllowed, BandwidthLimit, BandwidthTx};
 use crate::reader::{CouldNotCreateRuntime, Reader};
 use crate::store::migrate::MigrationError;
-use crate::store::{migrate, StoreReader, StoreWriter};
+use crate::store::{migrate, StoreReader, StoreWriter, WriterToken};
 use crate::{http_client, store};
 
 mod builder;
@@ -66,7 +66,7 @@ pub struct ManagedHandle {
 pub struct Handle {
     prefetch: usize,
     #[derivative(Debug = "ignore")]
-    seek_tx: mpsc::Sender<u64>,
+    seek_tx: mpsc::Sender<(u64, WriterToken)>,
     #[derivative(Debug = "ignore")]
     pause_tx: mpsc::Sender<bool>,
     #[derivative(Debug = "ignore")]

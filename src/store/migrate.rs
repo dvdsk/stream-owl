@@ -91,7 +91,11 @@ async fn migrate(store_writer: &mut StoreWriter, mut target: Store) -> Result<()
     let old = target;
 
     let old_ranges = old.ranges();
-    capacity_watcher.re_init_from(curr.can_write());
+    if curr.can_write() {
+        capacity_watcher.send_available_for_all();
+    } else {
+        capacity_watcher.out_of_capacity();
+    }
 
     debug!("updating callbacks and range_watch");
     range_watch.send_diff(old_ranges, curr.ranges());

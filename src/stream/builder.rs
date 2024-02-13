@@ -12,7 +12,7 @@ use tracing::debug;
 
 use crate::http_client::{self, Size};
 use crate::network::{BandwidthAllowed, BandwidthLim, BandwidthLimit, Network};
-use crate::store;
+use crate::store::{self, WriterToken};
 use crate::target::{ChunkSizeBuilder, StreamTarget};
 use crate::{manager, StreamDone, StreamId};
 
@@ -312,6 +312,7 @@ impl StreamBuilder<true> {
             self.restriction,
             bandwidth_lim,
             stream_size,
+            WriterToken::first(),
             retry,
             self.timeout,
         );

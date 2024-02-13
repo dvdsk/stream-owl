@@ -6,10 +6,11 @@ use tokio::runtime::Runtime;
 use tokio::sync::{mpsc, OwnedMutexGuard};
 use tracing::instrument;
 
-use crate::store::{self, ReadError, Store, StoreReader};
+use crate::store::{self, ReadError, Store, StoreReader, WriterToken};
 
 mod prefetch;
 use prefetch::Prefetch;
+
 
 #[derive(Derivative)]
 #[derivative(Debug)]
@@ -18,7 +19,8 @@ pub struct Reader {
     rt: Runtime,
     prefetch: Prefetch,
     #[derivative(Debug = "ignore")]
-    seek_tx: mpsc::Sender<u64>,
+    seek_tx: mpsc::Sender<(u64, WriterToken)>,
+    writer_token: WriterToken,
     last_seek: u64,
     minimum_size: u64,
     #[derivative(Debug = "ignore")]
@@ -34,7 +36,7 @@ impl Reader {
     #[instrument(level = "trace", skip(store_reader))]
     pub(crate) fn new(
         prefetch: usize,
-        seek_tx: mpsc::Sender<u64>,
+        seek_tx: mpsc::Sender<(u64, WriterToken)>,
         store_reader: OwnedMutexGuard<StoreReader>,
     ) -> Result<Self, CouldNotCreateRuntime> {
         Ok(Self {
@@ -42,6 +44,7 @@ impl Reader {
             prefetch: Prefetch::new(prefetch),
             seek_tx,
             last_seek: 0,
+            writer_token: WriterToken::first(),
             minimum_size: 0,
             store_reader,
             curr_pos: 0,
@@ -56,7 +59,7 @@ fn size_unknown() -> io::Error {
     )
 }
 
-fn stream_ended(_: tokio::sync::mpsc::error::SendError<u64>) -> io::Error {
+fn stream_ended<T>(_: tokio::sync::mpsc::error::SendError<T>) -> io::Error {
     io::Error::new(io::ErrorKind::UnexpectedEof, "stream was ended")
 }
 
@@ -84,12 +87,14 @@ impl Reader {
     }
 
     #[instrument(level = "trace", skip(self))]
-    fn seek_in_stream(&mut self, pos: u64) -> io::Result<()> {
-        self.seek_tx.blocking_send(pos).map_err(stream_ended)?;
+    fn seek_in_stream(&mut self, pos: u64, writer_token: WriterToken) -> io::Result<()> {
+        self.seek_tx.blocking_send((pos, writer_token)).map_err(stream_ended)?;
         self.last_seek = pos;
         self.prefetch.reset();
         Ok(())
     }
+
+    
 }
 
 fn seek_is_into_undownloaded(pos: u64, store: &OwnedMutexGuard<Store>) -> bool {
@@ -128,17 +133,16 @@ impl Seek for Reader {
         let store = self.store_reader.curr_store.clone().blocking_lock_owned();
         if seek_is_into_undownloaded(pos, &store) {
             tracing::debug!("Seek pos not yet in store: seeking in stream");
-            self.seek_in_stream(pos)?;
-            // if the writers where blocked by lack of space they
-            // can write now. Since all the old can be overwritten
-            self.store_reader.capacity.send_available();
+            self.writer_token.switch();
+            self.seek_in_stream(pos, self.writer_token)?;
+            self.store_reader.capacity.send_available_for(self.writer_token);
             return Ok(pos);
         }
 
         let Some(stream_end) = self.store_reader.stream_size().known() else {
             /* TODO: jump to end of downloaded bit <dvdsk noreply@davidsk.dev> */
             tracing::debug!("Unknown stream end: seeking in stream");
-            self.seek_in_stream(pos)?;
+            self.seek_in_stream(pos, self.writer_token)?;
             return Ok(pos);
         };
 
@@ -149,7 +153,7 @@ impl Seek for Reader {
                 "section after seek pos not yet in store and not being downloaded: seeking in stream"
             );
             /* TODO: jump to end of downloaded bit <dvdsk noreply@davidsk.dev> */
-            self.seek_in_stream(pos)?;
+            self.seek_in_stream(pos, self.writer_token)?;
             return Ok(pos);
         }
 

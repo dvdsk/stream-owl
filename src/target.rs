@@ -19,6 +19,7 @@ macro_rules! tracing_record {
 }
 
 use crate::http_client::Size;
+use crate::store::WriterToken;
 use crate::store::StoreWriter;
 
 #[derive(Debug)]
@@ -48,7 +49,7 @@ impl StreamTarget {
         trace!("set stream target position to: {pos}");
     }
 
-    #[instrument(level="trace", skip(self))]
+    #[instrument(level = "trace", skip(self))]
     pub(crate) fn increase_pos(&self, bytes: usize) {
         let prev = self.pos.fetch_add(bytes as u64, Ordering::Release);
         let new = prev + bytes as u64;
@@ -111,13 +112,17 @@ impl StreamTarget {
 impl StreamTarget {
     /// can be cancelled at any time by a (stream) seek
     #[instrument(level = "trace", skip(self, buf), fields(buf_len = buf.len()))]
-    pub(crate) async fn append(&mut self, buf: &[u8]) -> Result<usize, std::io::Error> {
+    pub(crate) async fn append(
+        &mut self,
+        buf: &[u8],
+        writer_token: WriterToken,
+    ) -> Result<usize, std::io::Error> {
         let mut total_written = 0;
 
         while total_written < buf.len() {
             let res = self
                 .store
-                .write_at(buf, self.pos.load(Ordering::Acquire))
+                .write_at(buf, self.pos.load(Ordering::Acquire), writer_token)
                 .await;
 
             let just_written = match res {

@@ -5,6 +5,7 @@ use bytes::Bytes;
 use http_body_util::BodyExt;
 use hyper::body::{Body, Incoming};
 
+use crate::store::WriterToken;
 use crate::target::StreamTarget;
 
 use super::size::Size;
@@ -71,6 +72,7 @@ impl Reader {
     pub(crate) async fn stream_to_writer(
         &mut self,
         target: &mut StreamTarget,
+        writer_token: WriterToken,
         timeout: Duration,
     ) -> Result<(), Error> {
         if let Reader::PartialData { range, .. } = self {
@@ -83,7 +85,10 @@ impl Reader {
                 return Ok(());
             };
 
-            target.append(&data).await.map_err(Error::WritingData)?;
+            target
+                .append(&data, writer_token)
+                .await
+                .map_err(Error::WritingData)?;
         }
     }
 }

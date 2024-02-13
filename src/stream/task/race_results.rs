@@ -1,19 +1,20 @@
 use super::Error;
 use crate::http_client::Error as HttpError;
 use crate::http_client::{RangeRefused, RangeSupported, StreamingClient};
+use crate::store::WriterToken;
 
 pub(super) enum Res1 {
-    Seek(Option<u64>),
+    Seek(Option<(u64, WriterToken)>),
     NewClient(Result<StreamingClient, HttpError>),
 }
 
 pub(super) enum Res2 {
-    Seek(Option<u64>),
+    Seek(Option<(u64, WriterToken)>),
     Write(Result<(), HttpError>),
 }
 
 pub(super) enum Res3 {
-    Seek(Option<u64>),
+    Seek(Option<(u64, WriterToken)>),
     StreamError(Error),
     StreamRangesSupported(RangeSupported),
     StreamRangesRefused(RangeRefused),
@@ -36,7 +37,7 @@ impl From<Result<Option<StreamingClient>, Error>> for Res3 {
 }
 
 pub(super) enum Res4 {
-    Seek(Option<u64>),
+    Seek(Option<(u64, WriterToken)>),
     GetClientError(Error),
     GotRangesSupported(RangeSupported),
     GotRangesRefused(RangeRefused),

@@ -12,15 +12,13 @@ use tracing::instrument;
 pub mod disk;
 pub mod limited_mem;
 pub mod migrate;
+pub(crate) mod range_watch;
 pub mod unlimited_mem;
 
 mod capacity;
-pub(crate) mod range_watch;
-
 pub(crate) use capacity::Bounds as CapacityBounds;
-
 use capacity::CapacityNotifier;
-pub(crate) use capacity::CapacityWatcher;
+pub(crate) use capacity::{CapacityWatcher, WriterToken};
 
 use crate::http_client::Size;
 use crate::stream::ReportTx;
@@ -163,8 +161,13 @@ impl StoreWriter {
     /// Note this is not an implementation of the std::io::Write tait. Ok(0) does
     /// **not** mean we will never be able to write again.
     #[instrument(level = "trace", skip(self, buf))]
-    pub(crate) async fn write_at(&mut self, buf: &[u8], pos: u64) -> Result<usize, Error> {
-        self.capacity_watcher.wait_for_space().await;
+    pub(crate) async fn write_at(
+        &mut self,
+        buf: &[u8],
+        pos: u64,
+        token: WriterToken,
+    ) -> Result<usize, Error> {
+        self.capacity_watcher.wait_for_space(token).await;
         // if a migration happens while we are here then we could get
         // into store::write_at, without it having free capacity.
         // In that case write_at will return zero (which is fine)
@@ -326,7 +329,7 @@ impl Store {
                 let n_read = inner.read_at(buf, pos);
                 if let Some(capacity) = update_capacity {
                     if inner.available_for_writing > 0 {
-                        capacity.send_available()
+                        capacity.send_available_for_all()
                     }
                 }
                 Ok(n_read)
