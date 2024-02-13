@@ -2,7 +2,6 @@ use derivative::Derivative;
 use futures::FutureExt;
 use futures_concurrency::future::Race;
 use rangemap::RangeSet;
-use std::future::pending;
 use std::num::{NonZeroU64, NonZeroUsize};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -221,9 +220,7 @@ impl StoreReader {
 
         let res = (wait_for_range, watch_eof_pos).race().await;
         match res {
-            Res::PosBeyondEOF => Err(ReadError::EndOfStream),
-            // this future should get cancelled now
-            Res::StreamWasClosed => pending().await,
+            Res::PosBeyondEOF | Res::StreamWasClosed => Err(ReadError::EndOfStream),
             Res::RangeReady => {
                 let n_read = self
                     .curr_store

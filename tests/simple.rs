@@ -2,8 +2,6 @@ use std::io::Read;
 use std::io::Seek;
 use std::num::NonZeroUsize;
 use std::sync::Arc;
-use std::thread;
-use std::time::Duration;
 
 use stream_owl::testing;
 use stream_owl::Reader;

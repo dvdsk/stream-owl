@@ -3,7 +3,8 @@ use std::ops::Range;
 use derivative::Derivative;
 use rangemap::RangeSet;
 use tokio::sync::mpsc;
-use tracing::{instrument, trace};
+use tokio::sync::mpsc::error::TryRecvError;
+use tracing::{debug, instrument, trace};
 
 use crate::stream::{Report, ReportTx};
 
@@ -50,9 +51,11 @@ pub(super) fn channel(report_tx: ReportTx) -> (Sender, Receiver) {
     )
 }
 
+/// Stream closed while requested range is not present 
+/// Data will never be received
 pub(super) struct StreamWasClosed;
 impl Receiver {
-    fn process_update(&mut self, update: RangeUpdate) -> Result<(), StreamWasClosed> {
+    fn process_update(&mut self, update: RangeUpdate) {
         match update {
             RangeUpdate::Replaced { removed, new } => {
                 self.ranges.remove(removed);
@@ -60,24 +63,29 @@ impl Receiver {
             }
             RangeUpdate::Removed(range) => self.ranges.remove(range),
             RangeUpdate::Added(range) => self.ranges.insert(range),
-            RangeUpdate::StreamClosed => return Err(StreamWasClosed),
+            RangeUpdate::StreamClosed => (),
         }
-        Ok(())
     }
 
     /// blocks till at least one byte is available at `needed_pos`.
     #[instrument(level = "trace")]
     pub(super) async fn wait_for(&mut self, needed_pos: u64) -> Result<(), StreamWasClosed> {
-        while let Ok(old_update) = self.rx.try_recv() {
-            self.process_update(old_update)?;
+        loop {
+            let old_update = match self.rx.try_recv() {
+                Ok(old_update) => old_update,
+                Err(TryRecvError::Empty) => break,
+                Err(TryRecvError::Disconnected) => break,
+            };
+            self.process_update(old_update);
         }
 
+        debug!("Waiting for data at {needed_pos} to become available");
         while !self.ranges.contains(&needed_pos) {
             trace!("blocking read until range available");
             let Some(update) = self.rx.recv().await else {
-                unreachable!("Receiver and Sender should drop at the same time")
+                return Err(StreamWasClosed)
             };
-            self.process_update(update)?;
+            self.process_update(update);
         }
         Ok(())
     }

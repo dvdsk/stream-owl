@@ -4,6 +4,7 @@ use std::ops::Range;
 use derivative::Derivative;
 use tracing::debug;
 use tracing::instrument;
+use tracing::trace;
 
 use crate::reader::handle_read_error;
 use crate::store::ReadError;
@@ -97,7 +98,7 @@ impl Prefetch {
         Ok(())
     }
 
-    #[instrument(level = "trace", skip(buf), ret)]
+    #[instrument(level = "trace", skip(buf))]
     pub(crate) fn read_from_prefetched(&mut self, buf: &mut [u8], curr_pos: u64) -> usize {
         if !self.in_buffer.contains(&curr_pos) {
             return 0;
@@ -105,6 +106,8 @@ impl Prefetch {
 
         let offset = curr_pos - self.in_buffer.start;
         let n_copied = self.buf.copy_starting_at(offset as usize, buf);
+        trace!("Read {n_copied} bytes from prefetch buffer");
+
         n_copied
     }
 }
