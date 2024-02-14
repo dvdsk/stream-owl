@@ -3,8 +3,7 @@ use std::num::NonZeroUsize;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use stream_owl::testing::TestEnded;
-use stream_owl::{testing, BandwidthLimit, StreamBuilder, StreamDone};
+use stream_owl::{testing, BandwidthLimit, StreamBuilder};
 use tokio::sync::Notify;
 
 #[test]
@@ -41,11 +40,7 @@ fn stream_not_faster_then_limit() {
 
     std::mem::drop(handle);
     std::mem::drop(reader);
-    let test_ended = runtime_thread.join().unwrap();
-    assert!(matches!(
-        test_ended,
-        TestEnded::StreamReturned(Ok(StreamDone::DownloadedAll))
-    ));
+    runtime_thread.join().unwrap().assert_no_errors();
 }
 
 fn test_run(spd_limit: u32) -> Duration {
@@ -80,11 +75,7 @@ fn test_run(spd_limit: u32) -> Duration {
 
     std::mem::drop(handle);
     std::mem::drop(reader);
-    let test_ended = runtime_thread.join().unwrap();
-    assert!(matches!(
-        test_ended,
-        TestEnded::StreamReturned(Ok(StreamDone::DownloadedAll))
-    ));
+    runtime_thread.join().unwrap().assert_no_errors();
     elapsed
 }
 
