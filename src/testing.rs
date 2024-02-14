@@ -10,7 +10,7 @@ use tokio::sync::Notify;
 use tokio::task::{JoinError, JoinHandle};
 use tracing_subscriber::fmt::time::uptime;
 
-use crate::{StreamBuilder, StreamDone, StreamError, StreamHandle};
+use crate::{StreamBuilder, StreamCanceld, StreamError, StreamHandle};
 
 mod pausable_server;
 pub use pausable_server::{pausable_server, Action, ConnControls, Event, ServerControls};
@@ -76,7 +76,7 @@ pub fn setup_reader_test(
 #[derive(Debug)]
 pub enum TestEnded {
     ServerCrashed(Result<Result<(), std::io::Error>, JoinError>),
-    StreamReturned(Result<StreamDone, StreamError>),
+    StreamReturned(Result<StreamCanceld, StreamError>),
     TestDone,
 }
 

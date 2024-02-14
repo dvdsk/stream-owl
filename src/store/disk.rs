@@ -24,6 +24,7 @@ pub(crate) struct Disk {
     last_write: u64,
     #[derivative(Debug = "ignore")]
     file: File,
+    path: PathBuf,
     progress: Progress,
 }
 
@@ -43,6 +44,8 @@ pub enum Error {
     FlushingData(std::io::Error),
     #[error("Could not flush progress info to disk: {0}")]
     FlushingProgress(progress::Error),
+    #[error("Could not remove progress or data file: {0}")]
+    RemovingFiles(std::io::Error),
 }
 
 #[derive(thiserror::Error, Debug)]
@@ -73,7 +76,7 @@ impl Disk {
             .await
             .map_err(OpenError::OpenForWriting)?;
 
-        let progress = Progress::new(path, 0)
+        let progress = Progress::new(path.clone(), 0)
             .await
             .map_err(OpenError::OpeningProgress)?;
         let already_downloaded = progress.ranges.clone();
@@ -83,6 +86,7 @@ impl Disk {
                 file_pos: 0,
                 last_write: 0,
                 file,
+                path,
                 progress,
             },
             already_downloaded,
@@ -171,5 +175,15 @@ impl Disk {
             .map_err(Error::FlushingProgress)?;
         debug!("flushed data and progress to disk");
         Ok(())
+    }
+
+    pub(crate) async fn remove_files(self) -> Result<(), Error> {
+        let path = self.path.clone();
+        let progress_path = progress::progress_path(self.path.clone());
+
+        // closes handles to the file
+        drop(self);
+        tokio::fs::remove_file(path).await.map_err(Error::RemovingFiles)?;
+        tokio::fs::remove_file(progress_path).await.map_err(Error::RemovingFiles)
     }
 }

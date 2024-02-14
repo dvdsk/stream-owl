@@ -141,7 +141,7 @@ impl Progress {
 }
 
 #[instrument(level = "trace", ret)]
-fn progress_path(mut file_path: PathBuf) -> PathBuf {
+pub(super) fn progress_path(mut file_path: PathBuf) -> PathBuf {
     file_path.as_mut_os_string().push(".progress");
     file_path
 }

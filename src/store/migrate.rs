@@ -3,7 +3,6 @@ use std::ops::Range;
 use std::path::PathBuf;
 
 use rangemap::set::RangeSet;
-use tokio::sync::oneshot::error::RecvError;
 use tokio::sync::Mutex;
 use tracing::{debug, info};
 use tracing::{instrument, trace};
@@ -69,8 +68,8 @@ pub enum MigrationError {
     MigrateRead(store::Error),
     #[error("Error during migration, failed to write to new store: {0}")]
     MigrateWrite(store::Error),
-    #[error("Migration task panicked, reason unknown :(")]
-    Panic(RecvError),
+    #[error("Something went wrong while cleaning up no longer needed files")]
+    Cleanup(disk::Error),
 }
 
 #[instrument(skip_all)]
@@ -80,6 +79,7 @@ async fn migrate(store_writer: &mut StoreWriter, mut target: Store) -> Result<()
         capacity_watcher,
         range_watch,
     } = store_writer;
+
     pre_migrate(&curr_store, &mut target).await?;
     debug!("finished pre-migration, acquiring exclusive access to store");
     let mut curr = curr_store.lock().await;
@@ -99,6 +99,10 @@ async fn migrate(store_writer: &mut StoreWriter, mut target: Store) -> Result<()
 
     debug!("updating callbacks and range_watch");
     range_watch.send_diff(old_ranges, curr.ranges());
+
+    if let Store::Disk(old_disk_store) = old {
+        old_disk_store.remove_files().await.map_err(MigrationError::Cleanup)?;
+    }
 
     info!("migration done");
     Ok(())

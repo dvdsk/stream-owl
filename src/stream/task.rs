@@ -24,14 +24,16 @@ pub(crate) mod retry;
 use race_results::*;
 
 #[derive(Debug)]
-pub enum StreamDone {
+pub(crate) enum StreamDone {
     DownloadedAll,
     Canceld,
 }
 
-// the writer will limit how fast we receive data using backpressure
+#[derive(Debug)]
+pub struct StreamCanceld;
+
 #[instrument(ret, err, skip_all)]
-pub(crate) async fn new(
+pub(crate) async fn restarting_on_seek(
     url: http::Uri,
     mut target: StreamTarget,
     report_tx: ReportTx,
@@ -41,6 +43,44 @@ pub(crate) async fn new(
     stream_size: Size,
     mut retry: retry::Decider,
     timeout: Duration,
+) -> Result<StreamCanceld, Error> {
+    loop {
+        if let StreamDone::Canceld = new(
+            &url,
+            &mut target,
+            &report_tx,
+            &mut seek_rx,
+            &restriction,
+            &bandwidth_lim,
+            &stream_size,
+            &mut retry,
+            timeout,
+        )
+        .await?
+        {
+            return Ok(StreamCanceld);
+        }
+
+        let Some((pos, writer_token)) = seek_rx.recv().await else {
+            return Ok(StreamCanceld);
+        };
+
+        target.writer_token = writer_token;
+        target.set_pos(pos);
+    }
+}
+
+#[instrument(ret, err, skip_all)]
+pub(crate) async fn new(
+    url: &http::Uri,
+    target: &mut StreamTarget,
+    report_tx: &ReportTx,
+    seek_rx: &mut mpsc::Receiver<(u64, WriterToken)>,
+    restriction: &Option<Network>,
+    bandwidth_lim: &BandwidthLim,
+    stream_size: &Size,
+    retry: &mut retry::Decider,
+    timeout: Duration,
 ) -> Result<StreamDone, Error> {
     let mut client = loop {
         let receive_seek = seek_rx.recv().map(Res1::Seek);
@@ -49,9 +89,9 @@ pub(crate) async fn new(
             restriction.clone(),
             bandwidth_lim.clone(),
             stream_size.clone(),
-            &mut target,
+            target,
             report_tx.clone(),
-            &mut retry,
+            retry,
             timeout,
         )
         .map(Res1::NewClient);
@@ -71,10 +111,10 @@ pub(crate) async fn new(
             StreamingClient::RangesSupported(client) => {
                 let res = stream_ranges(
                     client,
-                    &mut target,
+                    target,
                     &report_tx,
-                    &mut seek_rx,
-                    &mut retry,
+                    seek_rx,
+                    retry,
                     timeout,
                 )
                 .await;
@@ -89,10 +129,10 @@ pub(crate) async fn new(
                 match stream_all(
                     client,
                     &stream_size,
-                    &mut seek_rx,
-                    &mut target,
+                    seek_rx,
+                    target,
                     &report_tx,
-                    &mut retry,
+                    retry,
                     timeout,
                 )
                 .await

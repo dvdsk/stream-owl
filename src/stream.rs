@@ -25,7 +25,7 @@ pub use builder::StreamBuilder;
 pub use reporting::RangeUpdate;
 pub(crate) use reporting::{Report, ReportTx};
 pub(crate) use task::retry;
-pub use task::StreamDone;
+pub use task::StreamCanceld;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -145,9 +145,9 @@ impl ManagedHandle {
     managed_async! {unpause}
     managed_async! {limit_bandwidth bandwidth: BandwidthLimit}
     managed_async! {remove_bandwidth_limit}
-    managed_async! {use_limited_mem_backend max_cap: NonZeroUsize; Result<(), MigrationError>}
-    managed_async! {use_unlimited_mem_backend ; Result<(), MigrationError>}
-    managed_async! {use_disk_backend path: PathBuf; Result<(), MigrationError>}
+    managed_async! {migrate_to_limited_mem_backend max_cap: NonZeroUsize; Result<(), MigrationError>}
+    managed_async! {migrate_to_unlimited_mem_backend ; Result<(), MigrationError>}
+    managed_async! {migrate_to_disk_backend path: PathBuf; Result<(), MigrationError>}
     managed_async! {flush ; Result<(), Error>}
 
     managed! {try_get_reader; Result<crate::reader::Reader, GetReaderError>}
@@ -157,9 +157,9 @@ impl ManagedHandle {
     blocking! {unpause - unpause_blocking}
     blocking! {limit_bandwidth - limit_bandwidth_blocking bandwidth: BandwidthLimit}
     blocking! {remove_bandwidth_limit - remove_bandwidth_limit_blocking}
-    blocking! {use_limited_mem_backend - use_mem_backend_blocking max_cap: NonZeroUsize; Result<(), MigrationError>}
-    blocking! {use_unlimited_mem_backend - use_unlimited_mem_backend_blocking ; Result<(), MigrationError>}
-    blocking! {use_disk_backend - use_disk_backend_blocking path: PathBuf; Result<(), MigrationError>}
+    blocking! {migrate_to_limited_mem_backend - migrate_to_limited_mem_backend_blocking max_cap: NonZeroUsize; Result<(), MigrationError>}
+    blocking! {migrate_to_unlimited_mem_backend - migrate_to_unlimited_mem_backend_blocking ; Result<(), MigrationError>}
+    blocking! {migrate_to_disk_backend - migrate_to_disk_backend_blocking path: PathBuf; Result<(), MigrationError>}
     blocking! {flush - flush_blocking; Result<(), Error>}
 }
 
@@ -204,8 +204,8 @@ impl Handle {
                 .await
                 .expect("rx is part of Task, which should not drop before Handle");
             self.is_paused = false;
+            info!("unpausing stream")
         }
-        info!("unpausing stream")
     }
 
     #[instrument(level = "debug", ret, err(Debug))]
@@ -219,18 +219,18 @@ impl Handle {
             .map_err(GetReaderError::CreationFailed)
     }
 
-    pub async fn use_limited_mem_backend(
+    pub async fn migrate_to_limited_mem_backend(
         &mut self,
         max_cap: NonZeroUsize,
     ) -> Result<(), MigrationError> {
         migrate::to_mem(&mut self.store_writer, max_cap).await
     }
 
-    pub async fn use_unlimited_mem_backend(&mut self) -> Result<(), MigrationError> {
+    pub async fn migrate_to_unlimited_mem_backend(&mut self) -> Result<(), MigrationError> {
         migrate::to_unlimited_mem(&mut self.store_writer).await
     }
 
-    pub async fn use_disk_backend(&mut self, path: PathBuf) -> Result<(), MigrationError> {
+    pub async fn migrate_to_disk_backend(&mut self, path: PathBuf) -> Result<(), MigrationError> {
         migrate::to_disk(&mut self.store_writer, path).await
     }
 
@@ -247,13 +247,14 @@ impl Handle {
     blocking! {unpause - unpause_blocking}
     blocking! {limit_bandwidth - limit_bandwidth_blocking bandwidth: BandwidthLimit}
     blocking! {remove_bandwidth_limit - remove_bandwidth_limit_blocking}
-    blocking! {use_limited_mem_backend - use_mem_backend_blocking max_cap: NonZeroUsize; Result<(), MigrationError>}
-    blocking! {use_disk_backend - use_disk_backend_blocking path: PathBuf; Result<(), MigrationError>}
+    blocking! {migrate_to_limited_mem_backend - migrate_to_limited_mem_backend_bocking max_cap: NonZeroUsize; Result<(), MigrationError>}
+    blocking! {migrate_to_unlimited_mem_backend - migrate_to_unlimited_mem_backend_blocking ; Result<(), MigrationError>}
+    blocking! {migrate_to_disk_backend - migrate_to_disk_backend_blocking path: PathBuf; Result<(), MigrationError>}
     blocking! {flush - flush_blocking ; Result<(), Error>}
 }
 
 #[must_use]
 pub struct StreamEnded {
-    pub(super) res: Result<StreamDone, Error>,
+    pub(super) res: Result<StreamCanceld, Error>,
     pub(super) id: Id,
 }

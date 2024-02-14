@@ -5,7 +5,7 @@ use std::thread;
 use std::time::Duration;
 
 use stream_owl::testing::{test_data_range, Action, Event, ServerControls, TestEnded};
-use stream_owl::{testing, StreamBuilder, StreamDone};
+use stream_owl::{testing, StreamBuilder, StreamCanceld};
 use testing::ConnControls;
 use tokio::sync::Notify;
 use tracing::info;
@@ -39,7 +39,7 @@ fn after_seeking_forward_download_still_completes() {
 
     let test_ended = runtime_thread.join().unwrap();
     match test_ended {
-        testing::TestEnded::StreamReturned(Ok(StreamDone::DownloadedAll)) => (),
+        testing::TestEnded::StreamReturned(Ok(StreamCanceld)) => (),
         other => panic!("runtime should return with StreamReturned, it returned with {other:?}"),
     }
 

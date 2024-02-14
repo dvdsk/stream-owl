@@ -82,7 +82,6 @@ fn test_run(spd_limit: u32) -> Duration {
 
 #[test]
 fn bw_higher_limit_faster_speed() {
-    testing::setup_tracing();
     let factor = 3f32;
     let base = 100;
     let high = ((base as f32) * factor) as u32;

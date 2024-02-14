@@ -13,7 +13,7 @@ use crate::http_client::{self, Size};
 use crate::network::{BandwidthAllowed, BandwidthLim, BandwidthLimit, Network};
 use crate::store::{self, WriterToken};
 use crate::target::{ChunkSizeBuilder, StreamTarget};
-use crate::{manager, StreamDone, StreamId};
+use crate::{manager, StreamCanceld, StreamId};
 
 use super::reporting::RangeUpdate;
 use super::retry::{RetryDurLimit, RetryLimit};
@@ -246,7 +246,7 @@ impl StreamBuilder<true> {
     ) -> Result<
         (
             Handle,
-            impl Future<Output = Result<StreamDone, Error>> + Send + 'static,
+            impl Future<Output = Result<StreamCanceld, Error>> + Send + 'static,
         ),
         crate::store::Error,
     > {
@@ -299,7 +299,7 @@ impl StreamBuilder<true> {
         let chunk_size = self.chunk_size.build();
         let target = StreamTarget::new(store_writer, 0, chunk_size, WriterToken::first());
 
-        let stream_task = task::new(
+        let stream_task = task::restarting_on_seek(
             self.url,
             target,
             report_tx,
@@ -321,20 +321,20 @@ async fn pausable<F>(
     task: F,
     mut pause_rx: mpsc::Receiver<bool>,
     start_paused: bool,
-) -> Result<StreamDone, Error>
+) -> Result<StreamCanceld, Error>
 where
-    F: Future<Output = Result<StreamDone, Error>>,
+    F: Future<Output = Result<StreamCanceld, Error>>,
 {
     enum Res {
         Pause(Option<bool>),
-        Task(Result<StreamDone, Error>),
+        Task(Result<StreamCanceld, Error>),
     }
 
     if start_paused {
         match pause_rx.recv().await {
             Some(true) => unreachable!("handle should send pause only if unpaused"),
             Some(false) => (),
-            None => return Ok(StreamDone::Canceld),
+            None => return Ok(StreamCanceld),
         }
     }
 
@@ -343,12 +343,12 @@ where
         let get_pause = pause_rx.recv().map(Res::Pause);
         let task_ends = task.as_mut().map(Res::Task);
         match (get_pause, task_ends).race().await {
-            Res::Pause(None) => return Ok(StreamDone::Canceld),
+            Res::Pause(None) => return Ok(StreamCanceld),
             Res::Pause(Some(true)) => loop {
                 match pause_rx.recv().await {
                     Some(true) => unreachable!("handle should send pause only if unpaused"),
                     Some(false) => break,
-                    None => return Ok(StreamDone::Canceld),
+                    None => return Ok(StreamCanceld),
                 }
             },
             Res::Pause(Some(false)) => unreachable!("handle should send unpause only if paused"),

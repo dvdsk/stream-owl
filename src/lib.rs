@@ -20,7 +20,7 @@ pub use stream::{StreamBuilder, RangeUpdate};
 pub use manager::Error as ManagerError;
 pub use manager::Manager;
 pub use stream::Error as StreamError;
-pub use stream::StreamDone;
+pub use stream::StreamCanceld;
 
 pub use network::{list_interfaces, BandwidthLimit};
 pub use reader::Reader;

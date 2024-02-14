@@ -5,7 +5,7 @@ use std::sync::{mpsc, Arc};
 use std::thread;
 use std::time::Duration;
 use stream_owl::testing::{ServerControls, TestEnded};
-use stream_owl::{http_client, testing, StreamBuilder, StreamDone};
+use stream_owl::{http_client, testing, StreamBuilder, StreamCanceld};
 use testing::ConnControls;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::sync::Notify;
@@ -46,7 +46,6 @@ fn conn_drops_spaced_out() {
         test_done.notify_one();
     });
 
-    use StreamDone::DownloadedAll;
     use TestEnded::{StreamReturned, TestDone};
     let test_ended = runtime_thread.join().unwrap();
     let errors_retried: Vec<_> = retry_rx.iter().collect();
@@ -56,7 +55,7 @@ fn conn_drops_spaced_out() {
         .iter()
         .all(|err| matches!(err.as_ref(), &http_client::Error::ReadingBody(_))));
     match test_ended {
-        TestDone | StreamReturned(Ok(DownloadedAll)) => (),
+        TestDone | StreamReturned(Ok(StreamCanceld)) => (),
         other => panic!("runtime should return with TestDone, it returned with {other:?}"),
     }
 }

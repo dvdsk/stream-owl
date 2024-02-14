@@ -3,7 +3,7 @@ use std::sync::Arc;
 use tokio::task;
 
 pub use crate::store::range_watch::RangeUpdate;
-use crate::{http_client, StreamDone};
+use crate::{http_client, StreamCanceld};
 
 pub(crate) enum Report {
     Bandwidth(usize),
@@ -18,7 +18,7 @@ pub async fn setup(
     bandwidth_callback: Option<Box<dyn FnMut(usize) + Send>>,
     range_callback: Option<Box<dyn FnMut(RangeUpdate) + Send>>,
     retry_log_callback: Option<Box<dyn FnMut(Arc<http_client::Error>) + Send>>,
-) -> Result<StreamDone, crate::StreamError> {
+) -> Result<StreamCanceld, crate::StreamError> {
     let mut bandwidth_callback = bandwidth_callback.unwrap_or_else(|| Box::new(|_| {}));
     let mut range_callback = range_callback.unwrap_or_else(|| Box::new(|_| {}));
     let mut retry_log_callback = retry_log_callback.unwrap_or_else(|| Box::new(|_| {}));

@@ -2,7 +2,6 @@ use derivative::Derivative;
 use std::collections::TryReserveError;
 use std::num::NonZeroUsize;
 use std::ops::Range;
-use tracing::debug;
 
 use rangemap::set::RangeSet;
 
@@ -44,14 +43,6 @@ impl Memory {
         pos: u64,
     ) -> Result<(usize, RangeUpdate), CouldNotAllocate> {
         assert!(!buf.is_empty());
-        if pos != self.active_range.end {
-            debug!("refusing write: position not at current range end, seek must be in progress");
-            debug_assert!(!self.active_range.contains(&pos));
-
-            self.active_range = pos..pos;
-            self.last_read_pos = pos;
-        }
-
         self.buffer.append_at(pos, buf).map_err(CouldNotAllocate)?;
         let written = buf.len();
 
