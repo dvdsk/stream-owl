@@ -80,7 +80,7 @@ fn test_run(spd_limit: u32) -> Duration {
 }
 
 #[test]
-fn stream_speeds_up_if_limit_increased() {
+fn higher_limit_faster_speed() {
     let factor = 3f32;
     let base = 100;
     let high = ((base as f32) * factor) as u32;
@@ -91,4 +91,10 @@ fn stream_speeds_up_if_limit_increased() {
         slow_spd > high_spd.mul_f32(factor * 0.9),
         "high speed should be around {factor} as fast as slow. Instead they took: slow_spd: {slow_spd:?}, high_spd: {high_spd:?}"
     );
+}
+
+#[ignore = "not yet implemented"]
+#[test]
+fn increasing_limit_leads_to_speedup() {
+    todo!("use bandwidth monitor")
 }

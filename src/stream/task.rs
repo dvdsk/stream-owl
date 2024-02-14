@@ -39,7 +39,6 @@ pub(crate) async fn new(
     restriction: Option<Network>,
     bandwidth_lim: BandwidthLim,
     stream_size: Size,
-    mut writer_token: WriterToken,
     mut retry: retry::Decider,
     timeout: Duration,
 ) -> Result<StreamDone, Error> {
@@ -61,7 +60,7 @@ pub(crate) async fn new(
             Res1::NewClient(client) => break client?,
             Res1::Seek(None) => return Ok(StreamDone::Canceld),
             Res1::Seek(Some((pos, token))) => {
-                writer_token = token;
+                target.writer_token = token;
                 target.set_pos(pos)
             }
         }
@@ -75,7 +74,6 @@ pub(crate) async fn new(
                     &mut target,
                     &report_tx,
                     &mut seek_rx,
-                    writer_token,
                     &mut retry,
                     timeout,
                 )
@@ -94,7 +92,6 @@ pub(crate) async fn new(
                     &mut seek_rx,
                     &mut target,
                     &report_tx,
-                    writer_token,
                     &mut retry,
                     timeout,
                 )
@@ -102,10 +99,7 @@ pub(crate) async fn new(
                 {
                     AllRes::Error(e) => return Err(e),
                     AllRes::StreamDone(reason) => return Ok(reason),
-                    AllRes::SeekPerformed((new_client, new_token)) => {
-                        writer_token = new_token;
-                        new_client
-                    }
+                    AllRes::SeekPerformed(new_client) => new_client,
                 }
             }
         };
@@ -114,7 +108,7 @@ pub(crate) async fn new(
 
 enum AllRes {
     Error(Error),
-    SeekPerformed((StreamingClient, WriterToken)),
+    SeekPerformed(StreamingClient),
     StreamDone(StreamDone),
 }
 
@@ -124,21 +118,18 @@ async fn stream_all(
     seek_rx: &mut mpsc::Receiver<(u64, WriterToken)>,
     target: &mut StreamTarget,
     report_tx: &ReportTx,
-    mut writer_token: WriterToken,
     retry: &mut retry::Decider,
     timeout: Duration,
 ) -> AllRes {
     let builder = client_without_range.builder();
     let receive_seek = seek_rx.recv().map(Res2::Seek);
     let mut reader = client_without_range.into_reader();
-    let write = reader
-        .stream_to_writer(target, writer_token, timeout)
-        .map(Res2::Write);
+    let write = reader.stream_to_writer(target, timeout).map(Res2::Write);
 
-    let pos = match (write, receive_seek).race().await {
+    match (write, receive_seek).race().await {
         Res2::Seek(Some((pos, token))) => {
-            writer_token = token;
-            pos
+            target.writer_token = token;
+            target.set_pos(pos)
         }
         Res2::Seek(None) => return AllRes::StreamDone(StreamDone::Canceld),
         Res2::Write(Err(e)) => return AllRes::Error(Error::HttpClient(e)),
@@ -148,8 +139,8 @@ async fn stream_all(
             stream_size.mark_stream_end(target.pos());
             match seek_rx.recv().await {
                 Some((pos, token)) => {
-                    writer_token = token;
-                    pos
+                    target.writer_token = token;
+                    target.set_pos(pos);
                 }
                 None => return AllRes::StreamDone(StreamDone::Canceld),
             }
@@ -169,8 +160,7 @@ async fn stream_all(
             retry::CouldSucceed::No(e) => return AllRes::Error(Error::HttpClient(e)),
         };
     };
-    target.set_pos(pos);
-    AllRes::SeekPerformed((client, writer_token))
+    AllRes::SeekPerformed(client)
 }
 
 #[derive(Debug)]
@@ -187,7 +177,6 @@ async fn stream_ranges(
     target: &mut StreamTarget,
     report_tx: &ReportTx,
     seek_rx: &mut mpsc::Receiver<(u64, WriterToken)>,
-    mut writer_token: WriterToken,
     retry: &mut retry::Decider,
     timeout: Duration,
 ) -> RangeRes {
@@ -195,7 +184,7 @@ async fn stream_ranges(
         let client_builder = client.builder();
 
         let next_seek = loop {
-            let stream = process_one_stream(client, target, writer_token, timeout).map(Into::into);
+            let stream = process_one_stream(client, target, timeout).map(Into::into);
             let get_seek = seek_rx.recv().map(Res3::Seek);
             client = match (stream, get_seek).race().await {
                 Res3::Seek(None) => return RangeRes::Canceld,
@@ -222,7 +211,7 @@ async fn stream_ranges(
         };
 
         if let Some((pos, token)) = next_seek {
-            writer_token = token;
+            target.writer_token = token;
             target.set_pos(pos);
         }
 
@@ -236,7 +225,7 @@ async fn stream_ranges(
             match (get_client_at_new_pos, get_seek).race().await {
                 Res4::Seek(None) => return RangeRes::Canceld,
                 Res4::Seek(Some((pos, token))) => {
-                    writer_token = token;
+                    target.writer_token = token;
                     target.set_pos(pos)
                 }
                 Res4::GetClientError(e) => return RangeRes::Err(e),
@@ -251,12 +240,11 @@ async fn stream_ranges(
 async fn process_one_stream(
     client: RangeSupported,
     target: &mut StreamTarget,
-    writer_token: WriterToken,
     timeout: Duration,
 ) -> Result<Option<StreamingClient>, Error> {
     let mut reader = client.into_reader();
     reader
-        .stream_to_writer(target, writer_token, timeout)
+        .stream_to_writer(target, timeout)
         .await
         .map_err(Error::HttpClient)?;
 

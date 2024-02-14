@@ -19,8 +19,8 @@ macro_rules! tracing_record {
 }
 
 use crate::http_client::Size;
-use crate::store::WriterToken;
 use crate::store::StoreWriter;
+use crate::store::WriterToken;
 
 #[derive(Debug)]
 pub(crate) struct StreamTarget {
@@ -28,13 +28,20 @@ pub(crate) struct StreamTarget {
     /// it increments with the number of bytes written
     pos: AtomicU64,
     store: StoreWriter,
+    pub(crate) writer_token: WriterToken,
     pub(crate) chunk_size: ChunkSize,
 }
 
 impl StreamTarget {
-    pub(crate) fn new(store: StoreWriter, start_pos: u64, chunk_size: ChunkSize) -> Self {
+    pub(crate) fn new(
+        store: StoreWriter,
+        start_pos: u64,
+        chunk_size: ChunkSize,
+        writer_token: WriterToken,
+    ) -> Self {
         Self {
             store,
+            writer_token,
             pos: AtomicU64::new(start_pos),
             chunk_size,
         }
@@ -112,17 +119,13 @@ impl StreamTarget {
 impl StreamTarget {
     /// can be cancelled at any time by a (stream) seek
     #[instrument(level = "trace", skip(self, buf), fields(buf_len = buf.len()))]
-    pub(crate) async fn append(
-        &mut self,
-        buf: &[u8],
-        writer_token: WriterToken,
-    ) -> Result<usize, std::io::Error> {
+    pub(crate) async fn append(&mut self, buf: &[u8]) -> Result<usize, std::io::Error> {
         let mut total_written = 0;
 
         while total_written < buf.len() {
             let res = self
                 .store
-                .write_at(buf, self.pos.load(Ordering::Acquire), writer_token)
+                .write_at(buf, self.pos.load(Ordering::Acquire), self.writer_token)
                 .await;
 
             let just_written = match res {

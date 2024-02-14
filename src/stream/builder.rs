@@ -302,7 +302,7 @@ impl StreamBuilder<true> {
         };
 
         let chunk_size = self.chunk_size.build();
-        let target = StreamTarget::new(store_writer, 0, chunk_size);
+        let target = StreamTarget::new(store_writer, 0, chunk_size, WriterToken::first());
 
         let stream_task = task::new(
             self.url,
@@ -312,7 +312,6 @@ impl StreamBuilder<true> {
             self.restriction,
             bandwidth_lim,
             stream_size,
-            WriterToken::first(),
             retry,
             self.timeout,
         );
