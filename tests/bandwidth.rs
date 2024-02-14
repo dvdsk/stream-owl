@@ -5,14 +5,16 @@ use std::time::{Duration, Instant};
 
 use stream_owl::{testing, BandwidthLimit, StreamBuilder};
 use tokio::sync::Notify;
+use tracing::info;
 
 #[test]
-fn stream_not_faster_then_limit() {
-    testing::setup_tracing();
+fn bw_stream_not_faster_then_limit() {
+    // testing::setup_tracing();
     let configure = {
         move |b: StreamBuilder<false>| {
             b.with_prefetch(0)
                 .to_unlimited_mem()
+                .with_fixed_chunk_size(NonZeroUsize::new(100_000).unwrap())
                 .with_bandwidth_limit(BandwidthLimit::kbytes(20).unwrap())
         }
     };
@@ -44,7 +46,6 @@ fn stream_not_faster_then_limit() {
 }
 
 fn test_run(spd_limit: u32) -> Duration {
-    testing::setup_tracing();
     let configure = {
         move |b: StreamBuilder<false>| {
             b.with_prefetch(0)
@@ -80,11 +81,13 @@ fn test_run(spd_limit: u32) -> Duration {
 }
 
 #[test]
-fn higher_limit_faster_speed() {
+fn bw_higher_limit_faster_speed() {
+    testing::setup_tracing();
     let factor = 3f32;
     let base = 100;
     let high = ((base as f32) * factor) as u32;
     let slow_spd = test_run(base);
+    info!("done with slow test");
     let high_spd = test_run(high);
 
     assert!(

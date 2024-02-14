@@ -50,8 +50,6 @@ fn after_seeking_forward_download_still_completes() {
 
 #[test]
 fn resumes() {
-    testing::setup_tracing();
-
     let test_dl_path = stream_owl::testing::gen_file_path();
     let configure = {
         let path = test_dl_path.clone();

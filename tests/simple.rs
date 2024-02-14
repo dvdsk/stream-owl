@@ -50,8 +50,6 @@ mod disk {
 }
 
 fn seek_test(configure: fn(StreamBuilder<false>) -> StreamBuilder<true>) {
-    testing::setup_tracing();
-
     let test_file_size = 10_000u32;
     let test_done = Arc::new(Notify::new());
     let (runtime_thread, mut handle) = testing::setup_reader_test(

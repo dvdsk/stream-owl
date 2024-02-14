@@ -8,8 +8,6 @@ use tokio::sync::Notify;
 
 #[test]
 fn migrate_to_disk() {
-    testing::setup_tracing();
-
     let test_dl_path = stream_owl::testing::gen_file_path();
     let configure = |b: StreamBuilder<false>| {
         b.with_prefetch(0)

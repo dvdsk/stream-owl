@@ -8,7 +8,6 @@ use futures::{pin_mut, FutureExt};
 use futures_concurrency::future::Race;
 use std::future::Future;
 use tokio::sync::{mpsc, Mutex};
-use tracing::debug;
 
 use crate::http_client::{self, Size};
 use crate::network::{BandwidthAllowed, BandwidthLim, BandwidthLimit, Network};
@@ -277,19 +276,15 @@ impl StreamBuilder<true> {
             self.retry_log_callback,
         );
 
-        let mut handle = Handle {
+        let handle = Handle {
             prefetch: self.initial_prefetch,
             seek_tx,
-            is_paused: false,
+            is_paused: self.start_paused,
             store_writer: store_writer.clone(),
             store_reader: Arc::new(Mutex::new(store_reader)),
             pause_tx,
             bandwidth_lim_tx,
         };
-
-        if self.start_paused {
-            handle.pause().await;
-        }
 
         let retry = if self.retry_disabled {
             task::retry::Decider::disabled()
@@ -316,19 +311,31 @@ impl StreamBuilder<true> {
             self.timeout,
         );
 
-        let stream_task = pausable(stream_task, pause_rx);
+        let stream_task = pausable(stream_task, pause_rx, self.start_paused);
         let stream_task = (stream_task, reporting_task).race();
         Ok((handle, stream_task))
     }
 }
 
-async fn pausable<F>(task: F, mut pause_rx: mpsc::Receiver<bool>) -> Result<StreamDone, Error>
+async fn pausable<F>(
+    task: F,
+    mut pause_rx: mpsc::Receiver<bool>,
+    start_paused: bool,
+) -> Result<StreamDone, Error>
 where
     F: Future<Output = Result<StreamDone, Error>>,
 {
     enum Res {
         Pause(Option<bool>),
         Task(Result<StreamDone, Error>),
+    }
+
+    if start_paused {
+        match pause_rx.recv().await {
+            Some(true) => unreachable!("handle should send pause only if unpaused"),
+            Some(false) => (),
+            None => return Ok(StreamDone::Canceld),
+        }
     }
 
     pin_mut!(task);
@@ -339,12 +346,12 @@ where
             Res::Pause(None) => return Ok(StreamDone::Canceld),
             Res::Pause(Some(true)) => loop {
                 match pause_rx.recv().await {
-                    Some(true) => debug!("already paused"),
+                    Some(true) => unreachable!("handle should send pause only if unpaused"),
                     Some(false) => break,
                     None => return Ok(StreamDone::Canceld),
                 }
             },
-            Res::Pause(Some(false)) => debug!("not paused"),
+            Res::Pause(Some(false)) => unreachable!("handle should send unpause only if paused"),
             Res::Task(result) => return result,
         }
     }
