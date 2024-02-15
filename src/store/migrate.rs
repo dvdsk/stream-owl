@@ -1,4 +1,3 @@
-use std::num::NonZeroUsize;
 use std::ops::Range;
 use std::path::PathBuf;
 
@@ -21,7 +20,7 @@ mod range_list;
 #[instrument(skip(store_writer))]
 pub(crate) async fn to_mem(
     store_writer: &mut StoreWriter,
-    max_cap: NonZeroUsize,
+    max_cap: usize,
 ) -> Result<(), MigrationError> {
     if let StoreVariant::MemLimited = store_writer.variant().await {
         return Ok(());

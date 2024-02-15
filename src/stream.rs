@@ -1,5 +1,4 @@
 use std::any::Any;
-use std::num::NonZeroUsize;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -145,7 +144,7 @@ impl ManagedHandle {
     managed_async! {unpause}
     managed_async! {limit_bandwidth bandwidth: BandwidthLimit}
     managed_async! {remove_bandwidth_limit}
-    managed_async! {migrate_to_limited_mem_backend max_cap: NonZeroUsize; Result<(), MigrationError>}
+    managed_async! {migrate_to_limited_mem_backend max_cap: usize; Result<(), MigrationError>}
     managed_async! {migrate_to_unlimited_mem_backend ; Result<(), MigrationError>}
     managed_async! {migrate_to_disk_backend path: PathBuf; Result<(), MigrationError>}
     managed_async! {flush ; Result<(), Error>}
@@ -157,7 +156,7 @@ impl ManagedHandle {
     blocking! {unpause - unpause_blocking}
     blocking! {limit_bandwidth - limit_bandwidth_blocking bandwidth: BandwidthLimit}
     blocking! {remove_bandwidth_limit - remove_bandwidth_limit_blocking}
-    blocking! {migrate_to_limited_mem_backend - migrate_to_limited_mem_backend_blocking max_cap: NonZeroUsize; Result<(), MigrationError>}
+    blocking! {migrate_to_limited_mem_backend - migrate_to_limited_mem_backend_blocking max_cap: usize; Result<(), MigrationError>}
     blocking! {migrate_to_unlimited_mem_backend - migrate_to_unlimited_mem_backend_blocking ; Result<(), MigrationError>}
     blocking! {migrate_to_disk_backend - migrate_to_disk_backend_blocking path: PathBuf; Result<(), MigrationError>}
     blocking! {flush - flush_blocking; Result<(), Error>}
@@ -221,7 +220,7 @@ impl Handle {
 
     pub async fn migrate_to_limited_mem_backend(
         &mut self,
-        max_cap: NonZeroUsize,
+        max_cap: usize,
     ) -> Result<(), MigrationError> {
         migrate::to_mem(&mut self.store_writer, max_cap).await
     }
@@ -237,6 +236,7 @@ impl Handle {
     /// Only does something when the store actually supports flush
     #[tracing::instrument(level = "trace", skip(self))]
     pub async fn flush(&mut self) -> Result<(), Error> {
+        info!("hi");
         self.store_writer.flush().await.map_err(Error::Flushing)
     }
 }
@@ -247,7 +247,7 @@ impl Handle {
     blocking! {unpause - unpause_blocking}
     blocking! {limit_bandwidth - limit_bandwidth_blocking bandwidth: BandwidthLimit}
     blocking! {remove_bandwidth_limit - remove_bandwidth_limit_blocking}
-    blocking! {migrate_to_limited_mem_backend - migrate_to_limited_mem_backend_bocking max_cap: NonZeroUsize; Result<(), MigrationError>}
+    blocking! {migrate_to_limited_mem_backend - migrate_to_limited_mem_backend_bocking max_cap: usize; Result<(), MigrationError>}
     blocking! {migrate_to_unlimited_mem_backend - migrate_to_unlimited_mem_backend_blocking ; Result<(), MigrationError>}
     blocking! {migrate_to_disk_backend - migrate_to_disk_backend_blocking path: PathBuf; Result<(), MigrationError>}
     blocking! {flush - flush_blocking ; Result<(), Error>}

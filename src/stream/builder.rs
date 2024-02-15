@@ -22,7 +22,7 @@ use super::{reporting, task, Error, Handle, ManagedHandle, StreamEnded};
 #[derive(Debug)]
 enum StorageChoice {
     Disk(PathBuf),
-    MemLimited(NonZeroUsize),
+    MemLimited(usize),
     MemUnlimited,
 }
 
@@ -102,7 +102,7 @@ impl StreamBuilder<false> {
             timeout: self.timeout,
         }
     }
-    pub fn to_limited_mem(mut self, max_size: NonZeroUsize) -> StreamBuilder<true> {
+    pub fn to_limited_mem(mut self, max_size: usize) -> StreamBuilder<true> {
         self.storage = Some(StorageChoice::MemLimited(max_size));
         StreamBuilder {
             url: self.url,

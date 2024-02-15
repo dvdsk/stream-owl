@@ -121,7 +121,7 @@ pub(crate) async fn new_disk_backed(
 
 #[tracing::instrument]
 pub(crate) fn new_limited_mem_backed(
-    max_cap: NonZeroUsize,
+    max_cap: usize,
     stream_size: Size,
     report_tx: ReportTx,
 ) -> Result<(StoreReader, StoreWriter), limited_mem::CouldNotAllocate> {

@@ -50,9 +50,10 @@ pub struct SeekInProgress;
 pub struct CouldNotAllocate(#[from] TryReserveError);
 
 impl Memory {
-    pub(super) fn new(max_cap: NonZeroUsize) -> Result<Self, CouldNotAllocate> {
+    pub(super) fn new(max_cap: usize) -> Result<Self, CouldNotAllocate> {
+        assert_ne!(max_cap, 0, "max_capacity must be at least larger then zero");
         let mut buffer = VecDeque::new();
-        buffer.try_reserve_exact(max_cap.get())?;
+        buffer.try_reserve_exact(max_cap)?;
 
         Ok(Self {
             last_read_pos: 0,

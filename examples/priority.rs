@@ -1,7 +1,6 @@
 use futures::FutureExt;
 use futures_concurrency::prelude::*;
 use std::io::Read;
-use std::num::NonZeroUsize;
 use std::path::PathBuf;
 use stream_owl::StreamId;
 
@@ -43,10 +42,10 @@ async fn main() {
 
     let path = PathBuf::from("file2.data");
     streams[0]
-        .use_limited_mem_backend(NonZeroUsize::new(8_000).unwrap())
+        .migrate_to_limited_mem_backend(8_000)
         .await
         .unwrap();
-    streams[1].use_disk_backend(path).await.unwrap();
+    streams[1].migrate_to_disk_backend(path).await.unwrap();
 
     let mut stream = streams.pop().unwrap();
     let do_read = task::spawn_blocking(move || {

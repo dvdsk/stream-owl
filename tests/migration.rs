@@ -9,8 +9,6 @@ use tokio::sync::Notify;
 
 #[test]
 fn migrate_to_disk() {
-    testing::setup_tracing();
-
     let test_dl_path = stream_owl::testing::gen_file_path();
     let configure = |b: StreamBuilder<false>| {
         b.with_prefetch(0)
@@ -49,18 +47,22 @@ fn migrate_to_disk() {
     reader.seek(std::io::SeekFrom::Start(1_000)).unwrap();
     reader.read_exact(&mut vec![0; 2_000]).unwrap();
 
-    test_done.notify_one();
-    runtime_thread.join().unwrap().assert_no_errors();
     handle.pause_blocking();
     handle.flush_blocking().unwrap();
 
+    test_done.notify_one();
+    runtime_thread.join().unwrap().assert_no_errors();
+
+    // verify that the first 1000 bytes have not been downloaded
+    // while the part read before migration has and the part post
+    // migration has too
     let downloaded = std::fs::read(test_dl_path).unwrap();
     let correct = {
-        let mut test_data = testing::test_data(downloaded.len() as u32);
+        let mut test_data = testing::test_data(3000);
         test_data[0..1000].copy_from_slice(&[0; 1000]);
         test_data
     };
-    assert_eq_arrays(&downloaded, &correct)
+    assert_eq_arrays(&downloaded[0..3000], &correct)
 }
 
 fn assert_eq_arrays(downloaded: &[u8], correct: &[u8]) {
@@ -90,14 +92,45 @@ fn assert_eq_arrays(downloaded: &[u8], correct: &[u8]) {
     }
 }
 
-#[ignore = "todo"]
 #[test]
-fn completed_stream_migrated_to_lim_store_streams_again() {}
+fn unlimited_migrated_to_lim_store_streams_again() {
+    let configure = { move |b: StreamBuilder<false>| b.with_prefetch(0).to_unlimited_mem() };
+
+    let conn_controls = ConnControls::new(Vec::new());
+    let server_controls = ServerControls::new();
+    let test_file_size = 10_000u32;
+    let test_done = Arc::new(Notify::new());
+
+    let (runtime_thread, mut handle) = {
+        let server_controls = server_controls.clone();
+        let conn_controls = conn_controls.clone();
+        testing::setup_reader_test(&test_done, test_file_size, configure, move |size| {
+            testing::pausable_server(size, server_controls, conn_controls)
+        })
+    };
+
+    let mut reader = handle.try_get_reader().unwrap();
+    reader
+        .read_exact(&mut vec![0; test_file_size as usize])
+        .unwrap();
+    // at this point everything must be downloaded
+
+    handle
+        .migrate_to_limited_mem_backend_bocking((test_file_size / 10) as usize)
+        .unwrap();
+    reader
+        .seek(std::io::SeekFrom::Start((test_file_size / 2) as u64))
+        .unwrap();
+    reader.read_exact(&mut vec![0; 1_000 as usize]).unwrap();
+    reader.seek(std::io::SeekFrom::Start(0)).unwrap();
+    reader.read_exact(&mut vec![0; 1_000 as usize]).unwrap();
+
+    test_done.notify_one();
+    assert_eq!(TestEnded::TestDone, runtime_thread.join().unwrap());
+}
 
 #[test]
 fn file_is_deleted_when_migrating_from_disk_store() {
-    testing::setup_tracing();
-
     let test_dl_path = stream_owl::testing::gen_file_path();
     let configure = {
         let path = test_dl_path.clone();

@@ -1,6 +1,5 @@
 use std::io::Read;
 use std::io::Seek;
-use std::num::NonZeroUsize;
 use std::sync::Arc;
 
 use stream_owl::testing;
@@ -16,10 +15,7 @@ mod xlimited_memory {
 
     #[test]
     fn seek_from_all_sides_works() {
-        let configure = |b: StreamBuilder<false>| {
-            b.with_prefetch(0)
-                .to_limited_mem(NonZeroUsize::new(1000).unwrap())
-        };
+        let configure = |b: StreamBuilder<false>| b.with_prefetch(0).to_limited_mem(1000);
         seek_test(configure);
     }
 }
