@@ -53,6 +53,14 @@ pub(crate) enum Store {
     MemUnlimited(unlimited_mem::Memory),
 }
 
+#[derive(Debug, Clone, Default)]
+pub(crate) enum StorageChoice {
+    Disk(PathBuf),
+    MemLimited(usize),
+    #[default]
+    MemUnlimited,
+}
+
 #[derive(Debug, Clone)]
 pub(super) enum StoreVariant {
     Disk,

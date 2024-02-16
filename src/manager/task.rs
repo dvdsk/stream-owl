@@ -1,5 +1,4 @@
 use std::collections::HashMap;
-use std::path::PathBuf;
 
 use futures::FutureExt;
 use futures_concurrency::future::Race;
@@ -8,16 +7,14 @@ use tokio::sync::oneshot;
 use tokio::task::{AbortHandle, JoinError, JoinSet};
 use tracing::{info, trace, warn};
 
-use crate::network::Network;
 use crate::stream::{StreamBuilder, StreamEnded};
-use crate::{stream, StreamError, StreamId};
+use crate::{stream, ManagedStreamHandle, StreamError, StreamId};
 
 pub(crate) enum Command {
     AddStream {
-        url: hyper::Uri,
-        handle_tx: oneshot::Sender<stream::ManagedHandle>,
-        /// if non use memory store
-        to_disk: Option<PathBuf>,
+        handle_tx: oneshot::Sender<ManagedStreamHandle>,
+        builder: StreamBuilder<true>,
+        id: StreamId,
     },
     CancelStream(StreamId),
 }
@@ -60,8 +57,6 @@ pub(super) async fn run(
     cmd_tx: Sender<Command>,
     mut cmd_rx: Receiver<Command>,
     err_tx: UnboundedSender<(StreamId, StreamError)>,
-    restriction: Option<Network>,
-    initial_prefetch: usize,
 ) -> super::Error {
     use Command::*;
 
@@ -75,18 +70,16 @@ pub(super) async fn run(
 
         match (new_cmd, stream_err).race().await {
             Res::NewCmd(AddStream {
-                url,
+                id,
                 handle_tx,
-                to_disk,
+                builder,
             }) => add_stream(
                 &mut streams,
                 &mut abort_handles,
-                url,
-                to_disk,
                 handle_tx,
                 cmd_tx.clone(),
-                restriction.clone(),
-                initial_prefetch,
+                id,
+                builder,
             )
             .await
             .unwrap(),
@@ -111,25 +104,21 @@ pub(super) async fn run(
 async fn add_stream(
     streams: &mut JoinSet<stream::StreamEnded>,
     abort_handles: &mut HashMap<StreamId, AbortHandle>,
-    url: http::Uri,
-    to_disk: Option<PathBuf>,
-    handle_tx: oneshot::Sender<stream::ManagedHandle>,
+    handle_tx: oneshot::Sender<ManagedStreamHandle>,
     cmd_tx: Sender<Command>,
-    restriction: Option<Network>,
-    initial_prefetch: usize,
+    id: StreamId,
+    builder: StreamBuilder<true>,
 ) -> Result<(), crate::store::Error> {
-    let stream = StreamBuilder::new(url);
-    let mut stream = if let Some(path) = to_disk {
-        stream.to_disk(path)
-    } else {
-        stream.to_unlimited_mem()
-    };
-    if let Some(allowed) = restriction {
-        stream = stream.with_network_restriction(allowed)
+    let (handle, stream_task) = async move {
+        let (handle, stream_task) = builder.start().await?;
+        let stream_task = stream_task.map(move |res| StreamEnded { res, id });
+        let handle = ManagedStreamHandle {
+            cmd_manager: cmd_tx,
+            handle,
+        };
+        Result::<_, crate::store::Error>::Ok((handle, stream_task))
     }
-    stream = stream.with_prefetch(initial_prefetch);
-
-    let (handle, stream_task) = stream.start_managed(cmd_tx).await?;
+    .await?;
 
     let abort_handle = streams.spawn(stream_task);
     abort_handles.insert(handle.id(), abort_handle);

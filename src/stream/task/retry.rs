@@ -95,8 +95,9 @@ pub(crate) enum CouldSucceed {
 
 macro_rules! limit_type {
     ($name:ident: $type:ty, $forbidden:expr, $max:expr) => {
-        #[derive(Debug)]
+        #[derive(Debug, Default, Clone)]
         pub(crate) enum $name {
+            #[default]
             Unlimited,
             Limited($type),
         }
@@ -112,12 +113,6 @@ macro_rules! limit_type {
                 } else {
                     Self::Limited(val)
                 }
-            }
-        }
-
-        impl Default for $name {
-            fn default() -> Self {
-                Self::Unlimited
             }
         }
     };

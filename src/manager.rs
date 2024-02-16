@@ -1,51 +1,51 @@
-use std::path::PathBuf;
-use std::str::FromStr;
+use std::sync::Arc;
+use std::time::Duration;
 
-use futures::Future;
-use http::Uri;
+use derivative::Derivative;
 use tokio::sync::{mpsc, oneshot};
 
-use crate::network::{BandwidthLimit, Network};
-use crate::stream;
+use crate::network::{BandwidthAllowed, BandwidthLimit, Network};
+use crate::stream::retry::{RetryDurLimit, RetryLimit};
+use crate::{http_client, RangeUpdate, StreamId};
 
+mod builder;
+mod config;
+pub mod stream;
 mod task;
 pub(crate) use task::Command;
+
+use self::builder::ManagerBuilder;
+use self::config::StreamConfig;
 
 #[derive(Debug)]
 pub struct Error;
 
-#[derive(Debug, Default, Clone)]
-pub struct ManagerBuilder {
-    initial_prefetch: Option<usize>,
-    interface: Option<Network>,
+#[derive(Derivative)]
+#[derivative(Debug)]
+pub(crate) struct Callbacks {
+    #[derivative(Debug(format_with = "crate::util::fmt_non_printable_option"))]
+    retry_log_callback: Option<Arc<dyn Fn(StreamId, Arc<http_client::Error>) + Send + Sync>>,
+    #[derivative(Debug(format_with = "crate::util::fmt_non_printable_option"))]
+    bandwidth_callback: Option<Arc<dyn Fn(StreamId, usize) + Send + Sync>>,
+    #[derivative(Debug(format_with = "crate::util::fmt_non_printable_option"))]
+    range_callback: Option<Arc<dyn Fn(StreamId, RangeUpdate) + Send + Sync>>,
 }
 
-impl ManagerBuilder {
-    pub fn with_prefetch(self, bytes: usize) -> Self {
-        Self {
-            initial_prefetch: Some(bytes),
-            ..self
-        }
-    }
-    pub fn restrict_to_interface(self, network: Network) -> Self {
-        Self {
-            interface: Some(network),
-            ..self
-        }
-    }
-    pub fn build(
-        self,
-    ) -> (
-        Manager,
-        impl Future<Output = Error>,
-        mpsc::UnboundedReceiver<(stream::Id, stream::Error)>,
-    ) {
-        Manager::new(self.interface, self.initial_prefetch.unwrap_or(0))
-    }
-}
-
+#[derive(Derivative)]
+#[derivative(Debug)]
 pub struct Manager {
     cmd_tx: mpsc::Sender<task::Command>,
+
+    stream_defaults: StreamConfig,
+    restriction: Option<Network>,
+    total_bandwidth: BandwidthAllowed,
+
+    retry_disabled: bool,
+    max_retries: RetryLimit,
+    max_retry_dur: RetryDurLimit,
+    timeout: Duration,
+
+    callbacks: Callbacks,
 }
 
 impl Manager {
@@ -53,44 +53,38 @@ impl Manager {
         ManagerBuilder::default()
     }
 
-    fn new(
-        restriction: Option<Network>,
-        initial_prefetch: usize,
-    ) -> (
-        Self,
-        impl Future<Output = Error>,
-        mpsc::UnboundedReceiver<(stream::Id, stream::Error)>,
-    ) {
-        let (cmd_tx, cmd_rx) = mpsc::channel(32);
-        let (err_tx, err_rx) = mpsc::unbounded_channel();
-        (
-            Self {
-                cmd_tx: cmd_tx.clone(),
-            },
-            task::run(cmd_tx, cmd_rx, err_tx, restriction, initial_prefetch),
-            err_rx,
-        )
-    }
-
     /// panics if called from an async context
-    pub fn add_stream_to_disk(&mut self, url: &str, path: PathBuf) -> stream::ManagedHandle {
-        self.add_stream(url, Some(path))
-    }
-
-    /// panics if called from an async context
-    pub fn add_stream_to_mem(&mut self, url: &str) -> stream::ManagedHandle {
-        self.add_stream(url, None)
-    }
-
-    /// panics if called from an async context
-    pub fn add_stream(&mut self, url: &str, to_disk: Option<PathBuf>) -> stream::ManagedHandle {
-        let url = Uri::from_str(url).unwrap();
+    pub fn add(&mut self, url: http::Uri) -> stream::ManagedHandle {
+        let id = StreamId::new();
+        let config = self.stream_defaults.clone();
+        let stream = config.into_stream_builder(id, url, &mut self.callbacks);
         let (tx, rx) = oneshot::channel();
         self.cmd_tx
             .blocking_send(Command::AddStream {
-                url,
+                builder: stream,
                 handle_tx: tx,
-                to_disk,
+                id,
+            })
+            .expect("manager task should still run");
+        rx.blocking_recv().unwrap()
+    }
+
+    /// panics if called from an async context
+    pub fn add_with_options(
+        &mut self,
+        url: http::Uri,
+        configurator: impl FnOnce(StreamConfig) -> StreamConfig,
+    ) -> stream::ManagedHandle {
+        let id = StreamId::new();
+        let config = self.stream_defaults.clone();
+        let config = (configurator)(config);
+        let stream = config.into_stream_builder(id, url, &mut self.callbacks);
+        let (tx, rx) = oneshot::channel();
+        self.cmd_tx
+            .blocking_send(Command::AddStream {
+                builder: stream,
+                handle_tx: tx,
+                id,
             })
             .expect("manager task should still run");
         rx.blocking_recv().unwrap()

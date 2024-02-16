@@ -9,7 +9,6 @@ use tracing::info;
 
 #[test]
 fn bw_stream_not_faster_then_limit() {
-    // testing::setup_tracing();
     let configure = {
         move |b: StreamBuilder<false>| {
             b.with_prefetch(0)
@@ -65,23 +64,29 @@ fn test_run(spd_limit: u32) -> Duration {
     };
 
     // warmup
+    dbg(spd_limit);
     let mut reader = handle.try_get_reader().unwrap();
     reader.read_exact(&mut vec![0; 100_000]).unwrap();
 
+    dbg(spd_limit);
     let start = Instant::now();
     reader.read_exact(&mut vec![0; 400_000]).unwrap();
     let elapsed = start.elapsed();
 
+    dbg(spd_limit);
     test_done.notify_one();
 
+    dbg(spd_limit);
     std::mem::drop(handle);
     std::mem::drop(reader);
+    dbg(spd_limit);
     runtime_thread.join().unwrap().assert_no_errors();
     elapsed
 }
 
 #[test]
 fn bw_higher_limit_faster_speed() {
+    testing::setup_tracing();
     let factor = 3f32;
     let base = 100;
     let high = ((base as f32) * factor) as u32;

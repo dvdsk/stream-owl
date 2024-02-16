@@ -98,9 +98,10 @@ impl BandwidthLimit {
 pub(crate) type BandwidthRx = mpsc::Receiver<BandwidthAllowed>;
 pub(crate) type BandwidthTx = mpsc::Sender<BandwidthAllowed>;
 
-#[derive(Debug)]
+#[derive(Debug, Default, Clone)]
 pub(crate) enum BandwidthAllowed {
     Limited(BandwidthLimit),
+    #[default]
     UnLimited,
 }
 

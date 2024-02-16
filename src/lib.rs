@@ -1,3 +1,4 @@
+#![recursion_limit = "150"]
 mod manager;
 mod network;
 mod reader;
@@ -15,15 +16,16 @@ mod util;
 #[doc(hidden)]
 pub mod testing;
 
-pub use stream::{StreamBuilder, RangeUpdate};
+pub use stream::{RangeUpdate, StreamBuilder};
 
-pub use manager::Error as ManagerError;
-pub use manager::Manager;
 pub use stream::Error as StreamError;
+pub use stream::Handle as StreamHandle;
 pub use stream::StreamCanceld;
 
 pub use network::{list_interfaces, BandwidthLimit};
 pub use reader::Reader;
-pub use stream::Handle as StreamHandle;
-pub use stream::Id as StreamId;
-pub use stream::ManagedHandle as ManagedStreamHandle;
+
+pub use manager::stream::Id as StreamId;
+pub use manager::stream::ManagedHandle as ManagedStreamHandle;
+pub use manager::Error as ManagerError;
+pub use manager::Manager;

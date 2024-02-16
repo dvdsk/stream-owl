@@ -11,54 +11,36 @@ use tokio::sync::{mpsc, Mutex};
 
 use crate::http_client::{self, Size};
 use crate::network::{BandwidthAllowed, BandwidthLim, BandwidthLimit, Network};
-use crate::store::{self, WriterToken};
+use crate::store::{self, WriterToken, StorageChoice};
 use crate::target::{ChunkSizeBuilder, StreamTarget};
-use crate::{manager, StreamCanceld, StreamId};
+use crate::StreamCanceld;
 
 use super::reporting::RangeUpdate;
 use super::retry::{RetryDurLimit, RetryLimit};
-use super::{reporting, task, Error, Handle, ManagedHandle, StreamEnded};
-
-#[derive(Debug)]
-enum StorageChoice {
-    Disk(PathBuf),
-    MemLimited(usize),
-    MemUnlimited,
-}
+use super::{reporting, task, Error, Handle};
 
 #[derive(Derivative)]
 #[derivative(Debug)]
 pub struct StreamBuilder<const STORAGE_SET: bool> {
-    url: http::Uri,
-    storage: Option<StorageChoice>,
-    initial_prefetch: usize,
-    chunk_size: ChunkSizeBuilder,
-    restriction: Option<Network>,
-    start_paused: bool,
-    bandwidth: BandwidthAllowed,
+    pub(crate) url: http::Uri,
+    pub(crate) storage: Option<StorageChoice>,
+    pub(crate) initial_prefetch: usize,
+    pub(crate) chunk_size: ChunkSizeBuilder,
+    pub(crate) restriction: Option<Network>,
+    pub(crate) start_paused: bool,
+    pub(crate) bandwidth: BandwidthAllowed,
 
-    retry_disabled: bool,
-    max_retries: RetryLimit,
-    max_retry_dur: RetryDurLimit,
-    timeout: Duration,
+    pub(crate) retry_disabled: bool,
+    pub(crate) max_retries: RetryLimit,
+    pub(crate) max_retry_dur: RetryDurLimit,
+    pub(crate) timeout: Duration,
 
-    #[derivative(Debug(format_with = "fmt_non_printable_option"))]
-    retry_log_callback: Option<Box<dyn FnMut(Arc<http_client::Error>) + Send>>,
-    #[derivative(Debug(format_with = "fmt_non_printable_option"))]
-    bandwidth_callback: Option<Box<dyn FnMut(usize) + Send>>,
-    #[derivative(Debug(format_with = "fmt_non_printable_option"))]
-    range_callback: Option<Box<dyn FnMut(RangeUpdate) + Send>>,
-}
-
-fn fmt_non_printable_option<T>(
-    retry_logger: &Option<T>,
-    fmt: &mut std::fmt::Formatter,
-) -> std::result::Result<(), std::fmt::Error> {
-    if retry_logger.is_some() {
-        fmt.write_str("Some(-not printable-)")
-    } else {
-        fmt.write_str("None")
-    }
+    #[derivative(Debug(format_with = "crate::util::fmt_non_printable_option"))]
+    pub(crate) retry_log_callback: Option<Box<dyn FnMut(Arc<http_client::Error>) + Send>>,
+    #[derivative(Debug(format_with = "crate::util::fmt_non_printable_option"))]
+    pub(crate) bandwidth_callback: Option<Box<dyn FnMut(usize) + Send>>,
+    #[derivative(Debug(format_with = "crate::util::fmt_non_printable_option"))]
+    pub(crate) range_callback: Option<Box<dyn FnMut(RangeUpdate) + Send>>,
 }
 
 impl StreamBuilder<false> {
@@ -67,14 +49,14 @@ impl StreamBuilder<false> {
             url,
             storage: None,
             initial_prefetch: 10_000,
-            chunk_size: ChunkSizeBuilder::new_dynamic(),
+            chunk_size: ChunkSizeBuilder::default(),
             restriction: None,
             start_paused: false,
-            bandwidth: BandwidthAllowed::UnLimited,
+            bandwidth: BandwidthAllowed::default(),
             bandwidth_callback: None,
             retry_disabled: false,
-            max_retries: RetryLimit::Unlimited,
-            max_retry_dur: RetryDurLimit::Unlimited,
+            max_retries: RetryLimit::default(),
+            max_retry_dur: RetryDurLimit::default(),
             retry_log_callback: None,
             timeout: Duration::from_secs(2),
             range_callback: None,
@@ -219,27 +201,6 @@ impl<const STORAGE_SET: bool> StreamBuilder<STORAGE_SET> {
 }
 
 impl StreamBuilder<true> {
-    #[tracing::instrument]
-    pub(crate) async fn start_managed(
-        self,
-        manager_tx: mpsc::Sender<manager::Command>,
-    ) -> Result<
-        (
-            ManagedHandle,
-            impl Future<Output = StreamEnded> + Send + 'static,
-        ),
-        crate::store::Error,
-    > {
-        let id = StreamId::new();
-        let (handle, stream_task) = self.start().await?;
-        let stream_task = stream_task.map(|res| StreamEnded { res, id });
-        let handle = ManagedHandle {
-            cmd_manager: manager_tx,
-            handle,
-        };
-        Ok((handle, stream_task))
-    }
-
     #[tracing::instrument]
     pub async fn start(
         self,

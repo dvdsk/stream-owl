@@ -1,9 +1,15 @@
 use std::num::NonZeroUsize;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(crate) enum ChunkSizeBuilder {
     Dynamic { max: Option<usize> },
     Fixed(usize),
+}
+
+impl Default for ChunkSizeBuilder {
+    fn default() -> Self {
+        Self::new_dynamic()
+    }
 }
 
 impl ChunkSizeBuilder {
