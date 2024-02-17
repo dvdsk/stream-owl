@@ -1,4 +1,6 @@
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use bytes::Bytes;
@@ -23,7 +25,7 @@ use throttle_io::ThrottlableIo;
 #[derive(Derivative)]
 #[derivative(Debug)]
 pub(crate) struct BandwidthMonitor {
-    last_reported_bandwidth: usize,
+    last_reported_bandwidth: Arc<AtomicUsize>,
     last_update_at: Instant,
     read_since_last_report: usize,
     #[derivative(Debug = "ignore")]
@@ -31,21 +33,30 @@ pub(crate) struct BandwidthMonitor {
 }
 
 impl BandwidthMonitor {
-    fn new(report_tx: ReportTx) -> BandwidthMonitor {
+    fn new(report_tx: ReportTx, last_reported_bandwidth: Arc<AtomicUsize>) -> BandwidthMonitor {
         Self {
             // init with something crazy so the
             // first update will trigger a report
-            last_reported_bandwidth: usize::MAX,
+            last_reported_bandwidth,
             last_update_at: Instant::now(),
             read_since_last_report: 0,
             report_tx,
         }
     }
+
+    fn last_reported_bandwidth(&self) -> usize {
+        self.last_reported_bandwidth.load(Ordering::Relaxed)
+    }
+
+    fn set_last_reported_bandwidth(&self, val: usize) {
+        self.last_reported_bandwidth.store(val, Ordering::Relaxed)
+    }
+
     /// future work: test/refine, enable multiple strategies?
     fn update(&mut self, read: usize) {
         self.read_since_last_report += read;
 
-        let margin = self.last_reported_bandwidth / 10;
+        let margin = self.last_reported_bandwidth() / 10;
         let now = Instant::now();
         let elapsed = now.saturating_duration_since(self.last_update_at);
 
@@ -56,11 +67,10 @@ impl BandwidthMonitor {
 
         // in 0.001 bytes per millisec aka bytes/sec
         let curr_bandwidth = self.read_since_last_report * 1000 / (elapsed.as_millis() as usize);
-        if self.last_reported_bandwidth.abs_diff(curr_bandwidth) > margin {
-            let _ignore_no_space_left_error = self
-                .report_tx
-                .send(Report::Bandwidth(curr_bandwidth));
-            self.last_reported_bandwidth = curr_bandwidth;
+        if self.last_reported_bandwidth().abs_diff(curr_bandwidth) > margin {
+            let _ignore_no_space_left_error =
+                self.report_tx.send(Report::Bandwidth(curr_bandwidth));
+            self.set_last_reported_bandwidth(curr_bandwidth);
             self.last_update_at = now;
             self.read_since_last_report = 0;
         }
@@ -80,10 +90,11 @@ impl Connection {
         url: &hyper::Uri,
         restriction: &Option<Network>,
         bandwidth_lim: &BandwidthLim,
+        bandwidth: Arc<AtomicUsize>,
         report_tx: ReportTx,
         timeout: Duration,
     ) -> Result<Self, Error> {
-        let bandwidth_monitor = BandwidthMonitor::new(report_tx);
+        let bandwidth_monitor = BandwidthMonitor::new(report_tx, bandwidth);
         let tcp = new_tcp_stream(&url, &restriction).await?;
         let io = ThrottlableIo::new(tcp, bandwidth_lim, bandwidth_monitor)
             .map_err(Error::SocketConfig)?;

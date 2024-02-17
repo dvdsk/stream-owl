@@ -5,17 +5,16 @@ use derivative::Derivative;
 use tokio::sync::{mpsc, oneshot};
 
 use crate::network::{BandwidthAllowed, BandwidthLimit, Network};
-use crate::stream::retry::{RetryDurLimit, RetryLimit};
+use crate::retry::{RetryDurLimit, RetryLimit};
 use crate::{http_client, RangeUpdate, StreamId};
 
 mod builder;
-mod config;
 pub mod stream;
 mod task;
 pub(crate) use task::Command;
 
 use self::builder::ManagerBuilder;
-use self::config::StreamConfig;
+use self::stream::StreamConfig;
 
 #[derive(Debug)]
 pub struct Error;
@@ -44,8 +43,6 @@ pub struct Manager {
     max_retries: RetryLimit,
     max_retry_dur: RetryDurLimit,
     timeout: Duration,
-
-    callbacks: Callbacks,
 }
 
 impl Manager {
@@ -55,15 +52,13 @@ impl Manager {
 
     /// panics if called from an async context
     pub fn add(&mut self, url: http::Uri) -> stream::ManagedHandle {
-        let id = StreamId::new();
         let config = self.stream_defaults.clone();
-        let stream = config.into_stream_builder(id, url, &mut self.callbacks);
         let (tx, rx) = oneshot::channel();
         self.cmd_tx
             .blocking_send(Command::AddStream {
-                builder: stream,
+                url,
                 handle_tx: tx,
-                id,
+                config,
             })
             .expect("manager task should still run");
         rx.blocking_recv().unwrap()
@@ -75,16 +70,14 @@ impl Manager {
         url: http::Uri,
         configurator: impl FnOnce(StreamConfig) -> StreamConfig,
     ) -> stream::ManagedHandle {
-        let id = StreamId::new();
         let config = self.stream_defaults.clone();
         let config = (configurator)(config);
-        let stream = config.into_stream_builder(id, url, &mut self.callbacks);
         let (tx, rx) = oneshot::channel();
         self.cmd_tx
             .blocking_send(Command::AddStream {
-                builder: stream,
+                url,
                 handle_tx: tx,
-                id,
+                config,
             })
             .expect("manager task should still run");
         rx.blocking_recv().unwrap()

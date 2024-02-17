@@ -1,4 +1,6 @@
 use std::num::NonZeroUsize;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 
 #[derive(Debug, Clone)]
 pub(crate) enum ChunkSizeBuilder {
@@ -27,9 +29,12 @@ impl ChunkSizeBuilder {
         }
     }
 
-    pub(crate) fn build(self) -> ChunkSize {
+    pub(crate) fn build(self, bandwidth: Arc<AtomicUsize>) -> ChunkSize {
         match self {
-            ChunkSizeBuilder::Dynamic { max } => ChunkSize::Dynamic { max, last: 10_000 },
+            ChunkSizeBuilder::Dynamic { max } => ChunkSize::Dynamic {
+                max_size: max,
+                bandwidth,
+            },
             ChunkSizeBuilder::Fixed(size) => ChunkSize::Fixed(size),
         }
     }
@@ -37,28 +42,35 @@ impl ChunkSizeBuilder {
 
 #[derive(Debug)]
 pub(crate) enum ChunkSize {
-    Dynamic { last: usize, max: Option<usize> },
+    Dynamic {
+        max_size: Option<usize>,
+        bandwidth: Arc<AtomicUsize>,
+    },
     Fixed(usize),
 }
 
 impl ChunkSize {
     pub(crate) fn calc(&mut self) -> usize {
         match self {
-            ChunkSize::Dynamic { max, ref mut last } => {
-                *last = update_dynamic(*max, last);
-                *last
-            }
+            ChunkSize::Dynamic {
+                max_size,
+                ref bandwidth,
+            } => update_dynamic(*max_size, bandwidth.as_ref()),
             ChunkSize::Fixed(size) => *size,
         }
     }
 }
 
-fn update_dynamic(max: Option<usize>, last: &mut usize) -> usize {
-    let res = last;
+fn update_dynamic(max_size: Option<usize>, bandwidth: &AtomicUsize) -> usize {
+    let bytes_per_second = bandwidth.load(Ordering::Relaxed) * 1;
 
-    if let Some(max) = max {
-        (*res).min(max)
-    }else {
-        *res
+    // aim for a new http range request every 2 seconds
+    let new_optimal = bytes_per_second * 2;
+    let res = new_optimal.max(100);
+
+    if let Some(max) = max_size {
+        res.min(max)
+    } else {
+        res
     }
 }

@@ -8,7 +8,8 @@ use hyper::body::Incoming;
 use tracing::{debug, info, instrument, warn};
 
 use crate::network::{BandwidthLim, Network};
-use crate::stream::{retry, ReportTx};
+use crate::retry;
+use crate::stream::ReportTx;
 use crate::target::StreamTarget;
 
 mod read;
@@ -204,6 +205,7 @@ impl ClientBuilder {
             &url,
             &restriction,
             &bandwidth_lim,
+            target.bandwidth.clone(),
             report_tx.clone(),
             timeout,
         )
@@ -227,6 +229,7 @@ impl ClientBuilder {
                     &url,
                     &restriction,
                     &bandwidth_lim,
+                    target.bandwidth.clone(),
                     report_tx.clone(),
                     timeout,
                 )

@@ -1,15 +1,24 @@
+use std::future::Future;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 
 use derivative::Derivative;
-use tokio::sync::mpsc::Sender;
+use tokio::sync::mpsc::{self, Sender};
+use tokio::sync::Mutex;
 
+use crate::http_client::Size;
 use crate::manager::Command;
-use crate::network::BandwidthLimit;
+use crate::network::{BandwidthLim, BandwidthLimit};
 use crate::store::migrate::MigrationError;
+use crate::store::{self, StorageChoice, WriterToken};
+use crate::stream::{blocking, Report};
 use crate::stream::GetReaderError;
-use crate::{StreamError, StreamHandle};
-use crate::stream::blocking;
+use crate::target::StreamTarget;
+use crate::{util, StreamCanceld, StreamError, StreamHandle};
+
+mod config;
+pub use config::StreamConfig;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Id(usize);
@@ -85,4 +94,82 @@ impl ManagedHandle {
     blocking! {migrate_to_unlimited_mem_backend - migrate_to_unlimited_mem_backend_blocking ; Result<(), MigrationError>}
     blocking! {migrate_to_disk_backend - migrate_to_disk_backend_blocking path: PathBuf; Result<(), MigrationError>}
     blocking! {flush - flush_blocking; Result<(), StreamError>}
+}
+
+impl StreamConfig {
+    #[tracing::instrument]
+    pub async fn start(
+        self,
+        url: http::Uri,
+        manager_tx: Sender<Command>,
+        report_tx: Sender<Report>,
+    ) -> Result<
+        (
+            ManagedHandle,
+            impl Future<Output = Result<StreamCanceld, StreamError>> + Send + 'static,
+        ),
+        crate::store::Error,
+    > {
+        let stream_size = Size::default();
+
+        let (store_reader, store_writer) = match self.storage {
+            StorageChoice::Disk(path) => {
+                store::new_disk_backed(path, stream_size.clone(), report_tx.clone()).await?
+            }
+            StorageChoice::MemLimited(limit) => {
+                store::new_limited_mem_backed(limit, stream_size.clone(), report_tx.clone())?
+            }
+            StorageChoice::MemUnlimited => {
+                store::new_unlimited_mem_backed(stream_size.clone(), report_tx.clone())
+            }
+        };
+
+        let (seek_tx, seek_rx) = mpsc::channel(12);
+        let (pause_tx, pause_rx) = mpsc::channel(12);
+        let (bandwidth_lim, bandwidth_lim_tx) = BandwidthLim::new(self.bandwidth);
+
+        let stream_handle = StreamHandle {
+            prefetch: self.initial_prefetch,
+            seek_tx,
+            is_paused: self.start_paused,
+            store_writer: store_writer.clone(),
+            store_reader: Arc::new(Mutex::new(store_reader)),
+            pause_tx,
+            bandwidth_lim_tx,
+        };
+        let handle = ManagedHandle {
+            cmd_manager: manager_tx,
+            handle: stream_handle,
+        };
+
+        let retry = if self.retry_disabled {
+            crate::retry::Decider::disabled()
+        } else {
+            crate::retry::Decider::with_limits(
+                self.max_retries,
+                self.max_retry_dur,
+                report_tx.clone(),
+            )
+        };
+
+        let target = StreamTarget::new(store_writer, 0, self.chunk_size, WriterToken::first());
+
+        let stream_task = crate::stream::task::restarting_on_seek(
+            url,
+            target,
+            report_tx,
+            seek_rx,
+            self.restriction,
+            bandwidth_lim,
+            stream_size,
+            retry,
+            self.timeout,
+        );
+
+        /* TODO: For managed stream do not use the reporting task, instead
+         * use the managers rx/tx pair and have the reporting_task running on
+         * the manager <16-02-24, dvdsk> */
+        let stream_task = util::pausable(stream_task, pause_rx, self.start_paused);
+        Ok((handle, stream_task))
+    }
 }

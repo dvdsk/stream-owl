@@ -64,22 +64,22 @@ fn test_run(spd_limit: u32) -> Duration {
     };
 
     // warmup
-    dbg(spd_limit);
+    dbg!(spd_limit);
     let mut reader = handle.try_get_reader().unwrap();
     reader.read_exact(&mut vec![0; 100_000]).unwrap();
 
-    dbg(spd_limit);
+    dbg!(spd_limit);
     let start = Instant::now();
     reader.read_exact(&mut vec![0; 400_000]).unwrap();
     let elapsed = start.elapsed();
 
-    dbg(spd_limit);
+    dbg!(spd_limit);
     test_done.notify_one();
 
-    dbg(spd_limit);
+    dbg!(spd_limit);
     std::mem::drop(handle);
     std::mem::drop(reader);
-    dbg(spd_limit);
+    dbg!(spd_limit);
     runtime_thread.join().unwrap().assert_no_errors();
     elapsed
 }

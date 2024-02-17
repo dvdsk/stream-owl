@@ -1,5 +1,5 @@
-use std::path::PathBuf;
 use std::any::Any;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use derivative::Derivative;
@@ -16,12 +16,11 @@ use crate::{http_client, store, StreamId};
 mod builder;
 mod drop;
 mod reporting;
-mod task;
+pub(crate) mod task;
 
 pub use builder::StreamBuilder;
 pub use reporting::RangeUpdate;
 pub(crate) use reporting::{Report, ReportTx};
-pub(crate) use task::retry;
 pub use task::StreamCanceld;
 
 #[derive(Debug, thiserror::Error)]
@@ -36,22 +35,21 @@ pub enum Error {
     UserCallbackPanicked(Box<dyn Any + Send + 'static>),
 }
 
-
 #[derive(Derivative)]
 #[derivative(Debug)]
 pub struct Handle {
-    prefetch: usize,
+    pub(crate) prefetch: usize,
     #[derivative(Debug = "ignore")]
-    seek_tx: mpsc::Sender<(u64, WriterToken)>,
+    pub(crate) seek_tx: mpsc::Sender<(u64, WriterToken)>,
     #[derivative(Debug = "ignore")]
-    pause_tx: mpsc::Sender<bool>,
+    pub(crate) pause_tx: mpsc::Sender<bool>,
     #[derivative(Debug = "ignore")]
-    bandwidth_lim_tx: BandwidthTx,
-    is_paused: bool,
+    pub(crate) bandwidth_lim_tx: BandwidthTx,
+    pub(crate) is_paused: bool,
 
     #[derivative(Debug(format_with = "mutex_in_use"))]
-    store_reader: Arc<TokioMutex<StoreReader>>,
-    store_writer: StoreWriter,
+    pub(crate) store_reader: Arc<TokioMutex<StoreReader>>,
+    pub(crate) store_writer: StoreWriter,
 }
 
 fn mutex_in_use(

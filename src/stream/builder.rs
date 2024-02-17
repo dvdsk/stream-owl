@@ -4,19 +4,18 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use derivative::Derivative;
-use futures::{pin_mut, FutureExt};
 use futures_concurrency::future::Race;
 use std::future::Future;
 use tokio::sync::{mpsc, Mutex};
 
 use crate::http_client::{self, Size};
 use crate::network::{BandwidthAllowed, BandwidthLim, BandwidthLimit, Network};
-use crate::store::{self, WriterToken, StorageChoice};
+use crate::store::{self, StorageChoice, WriterToken};
 use crate::target::{ChunkSizeBuilder, StreamTarget};
-use crate::StreamCanceld;
+use crate::{StreamCanceld, util};
 
 use super::reporting::RangeUpdate;
-use super::retry::{RetryDurLimit, RetryLimit};
+use crate::retry::{RetryDurLimit, RetryLimit};
 use super::{reporting, task, Error, Handle};
 
 #[derive(Derivative)]
@@ -248,17 +247,16 @@ impl StreamBuilder<true> {
         };
 
         let retry = if self.retry_disabled {
-            task::retry::Decider::disabled()
+            crate::retry::Decider::disabled()
         } else {
-            task::retry::Decider::with_limits(
+            crate::retry::Decider::with_limits(
                 self.max_retries,
                 self.max_retry_dur,
                 report_tx.clone(),
             )
         };
 
-        let chunk_size = self.chunk_size.build();
-        let target = StreamTarget::new(store_writer, 0, chunk_size, WriterToken::first());
+        let target = StreamTarget::new(store_writer, 0, self.chunk_size, WriterToken::first());
 
         let stream_task = task::restarting_on_seek(
             self.url,
@@ -272,48 +270,13 @@ impl StreamBuilder<true> {
             self.timeout,
         );
 
-        let stream_task = pausable(stream_task, pause_rx, self.start_paused);
+        /* TODO: For managed stream do not use the reporting task, instead 
+         * use the managers rx/tx pair and have the reporting_task running on 
+         * the manager <16-02-24, dvdsk> */
+        let stream_task = util::pausable(stream_task, pause_rx, self.start_paused);
         let stream_task = (stream_task, reporting_task).race();
         Ok((handle, stream_task))
     }
 }
 
-async fn pausable<F>(
-    task: F,
-    mut pause_rx: mpsc::Receiver<bool>,
-    start_paused: bool,
-) -> Result<StreamCanceld, Error>
-where
-    F: Future<Output = Result<StreamCanceld, Error>>,
-{
-    enum Res {
-        Pause(Option<bool>),
-        Task(Result<StreamCanceld, Error>),
-    }
 
-    if start_paused {
-        match pause_rx.recv().await {
-            Some(true) => unreachable!("handle should send pause only if unpaused"),
-            Some(false) => (),
-            None => return Ok(StreamCanceld),
-        }
-    }
-
-    pin_mut!(task);
-    loop {
-        let get_pause = pause_rx.recv().map(Res::Pause);
-        let task_ends = task.as_mut().map(Res::Task);
-        match (get_pause, task_ends).race().await {
-            Res::Pause(None) => return Ok(StreamCanceld),
-            Res::Pause(Some(true)) => loop {
-                match pause_rx.recv().await {
-                    Some(true) => unreachable!("handle should send pause only if unpaused"),
-                    Some(false) => break,
-                    None => return Ok(StreamCanceld),
-                }
-            },
-            Res::Pause(Some(false)) => unreachable!("handle should send unpause only if paused"),
-            Res::Task(result) => return result,
-        }
-    }
-}

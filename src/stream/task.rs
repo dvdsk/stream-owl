@@ -6,6 +6,7 @@ use crate::http_client::Size;
 use crate::http_client::StreamingClient;
 use crate::network::BandwidthLim;
 use crate::network::Network;
+use crate::retry;
 use crate::store::WriterToken;
 use crate::target::StreamTarget;
 
@@ -20,7 +21,6 @@ use super::Error;
 use futures_concurrency::future::Race;
 
 mod race_results;
-pub(crate) mod retry;
 use race_results::*;
 
 #[derive(Debug)]
@@ -41,7 +41,7 @@ pub(crate) async fn restarting_on_seek(
     restriction: Option<Network>,
     bandwidth_lim: BandwidthLim,
     stream_size: Size,
-    mut retry: retry::Decider,
+    mut retry: crate::retry::Decider,
     timeout: Duration,
 ) -> Result<StreamCanceld, Error> {
     loop {

@@ -6,11 +6,11 @@ use futures::Future;
 use tokio::sync::mpsc;
 
 use crate::network::{BandwidthAllowed, Network};
-use crate::stream::retry::{RetryDurLimit, RetryLimit};
+use crate::retry::{RetryDurLimit, RetryLimit};
 use crate::{http_client, Manager, ManagerError, RangeUpdate, StreamError, StreamId};
 
-use super::config::StreamConfig;
 use super::Callbacks;
+use super::StreamConfig;
 
 #[derive(Derivative, Default)]
 #[derivative(Debug)]
@@ -102,7 +102,7 @@ impl ManagerBuilder {
         self
     }
 
-    /// Perform an callback whenever the range locally available 
+    /// Perform an callback whenever the range locally available
     /// has changed
     pub fn with_range_callback(
         mut self,
@@ -138,10 +138,8 @@ impl ManagerBuilder {
                 max_retries: self.max_retries,
                 max_retry_dur: self.max_retry_dur,
                 timeout: self.timeout,
-
-                callbacks,
             },
-            super::task::run(cmd_tx, cmd_rx, err_tx),
+            super::task::run(cmd_tx, cmd_rx, err_tx, callbacks),
             err_rx,
         )
     }

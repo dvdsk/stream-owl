@@ -6,6 +6,7 @@ pub mod store;
 
 pub mod http_client;
 mod stream;
+mod retry;
 /// Glue between store and stream/http_client
 mod target;
 

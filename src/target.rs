@@ -1,5 +1,6 @@
 use std::ops::Range;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::Arc;
 
 use tracing::{debug, info, instrument, trace};
 
@@ -28,6 +29,7 @@ pub(crate) struct StreamTarget {
     /// it increments with the number of bytes written
     pos: AtomicU64,
     store: StoreWriter,
+    pub(crate) bandwidth: Arc<AtomicUsize>,
     pub(crate) writer_token: WriterToken,
     pub(crate) chunk_size: ChunkSize,
 }
@@ -36,12 +38,15 @@ impl StreamTarget {
     pub(crate) fn new(
         store: StoreWriter,
         start_pos: u64,
-        chunk_size: ChunkSize,
+        chunk_size: ChunkSizeBuilder,
         writer_token: WriterToken,
     ) -> Self {
+        let bandwidth = Arc::new(AtomicUsize::new(1000));
+        let chunk_size = chunk_size.build(bandwidth.clone());
         Self {
             store,
             writer_token,
+            bandwidth,
             pos: AtomicU64::new(start_pos),
             chunk_size,
         }
