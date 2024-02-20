@@ -10,17 +10,15 @@ use tracing::{info, instrument};
 use crate::network::{BandwidthAllowed, BandwidthLimit, BandwidthTx};
 use crate::reader::{CouldNotCreateRuntime, Reader};
 use crate::store::migrate::MigrationError;
+pub use crate::store::range_watch::RangeUpdate;
 use crate::store::{migrate, StoreReader, StoreWriter, WriterToken};
 use crate::{http_client, store, StreamId};
 
 mod builder;
 mod drop;
-mod reporting;
 pub(crate) mod task;
 
 pub use builder::StreamBuilder;
-pub use reporting::RangeUpdate;
-pub(crate) use reporting::{Report, ReportTx};
 pub use task::StreamCanceld;
 
 #[derive(Debug, thiserror::Error)]
@@ -37,7 +35,7 @@ pub enum Error {
 
 #[derive(Derivative)]
 #[derivative(Debug)]
-pub struct Handle {
+pub struct Handle<F: crate::RangeCallback> {
     pub(crate) prefetch: usize,
     #[derivative(Debug = "ignore")]
     pub(crate) seek_tx: mpsc::Sender<(u64, WriterToken)>,
@@ -49,7 +47,10 @@ pub struct Handle {
 
     #[derivative(Debug(format_with = "mutex_in_use"))]
     pub(crate) store_reader: Arc<TokioMutex<StoreReader>>,
-    pub(crate) store_writer: StoreWriter,
+    // used for flushing and migrations only
+    // /* TODO: try using Box<dyn something> to get rid of 
+    // the generics in the handle <dvdsk> */
+    pub(crate) store_writer: StoreWriter<F>,
 }
 
 fn mutex_in_use(
@@ -91,7 +92,7 @@ macro_rules! blocking {
 }
 pub(crate) use blocking;
 
-impl Handle {
+impl<F: crate::RangeCallback> Handle<F> {
     pub async fn limit_bandwidth(&self, bandwidth: BandwidthLimit) {
         self.bandwidth_lim_tx
             .send(BandwidthAllowed::Limited(bandwidth))
@@ -128,7 +129,7 @@ impl Handle {
         }
     }
 
-    #[instrument(level = "debug", ret, err(Debug))]
+    #[instrument(level = "debug", skip(self), ret, err(Debug))] // TODO remove skip self
     pub fn try_get_reader(&mut self) -> Result<crate::reader::Reader, GetReaderError> {
         let store = self
             .store_reader
@@ -162,7 +163,7 @@ impl Handle {
 }
 
 /// blocking implementations of the async functions above
-impl Handle {
+impl<F: crate::RangeCallback> Handle<F> {
     blocking! {pause - pause_blocking}
     blocking! {unpause - unpause_blocking}
     blocking! {limit_bandwidth - limit_bandwidth_blocking bandwidth: BandwidthLimit}

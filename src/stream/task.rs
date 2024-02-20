@@ -16,7 +16,6 @@ use tracing::info;
 use tracing::instrument;
 use tracing::warn;
 
-use super::reporting::ReportTx;
 use super::Error;
 use futures_concurrency::future::Race;
 
@@ -33,9 +32,9 @@ pub(crate) enum StreamDone {
 pub struct StreamCanceld;
 
 #[instrument(ret, err, skip_all)]
-pub(crate) async fn restarting_on_seek(
+pub(crate) async fn restarting_on_seek<F: crate::RangeCallback>(
     url: http::Uri,
-    mut target: StreamTarget,
+    mut target: StreamTarget<F>,
     report_tx: ReportTx,
     mut seek_rx: mpsc::Receiver<(u64, WriterToken)>,
     restriction: Option<Network>,
@@ -71,9 +70,9 @@ pub(crate) async fn restarting_on_seek(
 }
 
 #[instrument(ret, err, skip_all)]
-pub(crate) async fn new(
+pub(crate) async fn new<F: crate::RangeCallback>(
     url: &http::Uri,
-    target: &mut StreamTarget,
+    target: &mut StreamTarget<F>,
     report_tx: &ReportTx,
     seek_rx: &mut mpsc::Receiver<(u64, WriterToken)>,
     restriction: &Option<Network>,
@@ -152,11 +151,11 @@ enum AllRes {
     StreamDone(StreamDone),
 }
 
-async fn stream_all(
+async fn stream_all<F: crate::RangeCallback>(
     client_without_range: RangeRefused,
     stream_size: &Size,
     seek_rx: &mut mpsc::Receiver<(u64, WriterToken)>,
-    target: &mut StreamTarget,
+    target: &mut StreamTarget<F>,
     report_tx: &ReportTx,
     retry: &mut retry::Decider,
     timeout: Duration,
@@ -212,9 +211,9 @@ enum RangeRes {
 }
 
 #[instrument(level = "debug", skip(client, target, seek_rx, report_tx), ret)]
-async fn stream_ranges(
+async fn stream_ranges<F: crate::RangeCallback>(
     mut client: RangeSupported,
-    target: &mut StreamTarget,
+    target: &mut StreamTarget<F>,
     report_tx: &ReportTx,
     seek_rx: &mut mpsc::Receiver<(u64, WriterToken)>,
     retry: &mut retry::Decider,
@@ -277,9 +276,9 @@ async fn stream_ranges(
 }
 
 #[instrument(level = "debug", skip_all)]
-async fn process_one_stream(
+async fn process_one_stream<F: crate::RangeCallback>(
     client: RangeSupported,
-    target: &mut StreamTarget,
+    target: &mut StreamTarget<F>,
     timeout: Duration,
 ) -> Result<Option<StreamingClient>, Error> {
     let mut reader = client.into_reader();

@@ -18,8 +18,8 @@ use crate::util::RangeLen;
 mod range_list;
 
 #[instrument(skip(store_writer))]
-pub(crate) async fn to_mem(
-    store_writer: &mut StoreWriter,
+pub(crate) async fn to_mem<F: crate::RangeCallback>(
+    store_writer: &mut StoreWriter<F>,
     max_cap: usize,
 ) -> Result<(), MigrationError> {
     if let StoreVariant::MemLimited = store_writer.variant().await {
@@ -31,7 +31,9 @@ pub(crate) async fn to_mem(
 }
 
 #[instrument(skip(store_writer))]
-pub(crate) async fn to_unlimited_mem(store_writer: &mut StoreWriter) -> Result<(), MigrationError> {
+pub(crate) async fn to_unlimited_mem<F: crate::RangeCallback>(
+    store_writer: &mut StoreWriter<F>,
+) -> Result<(), MigrationError> {
     if let StoreVariant::MemUnlimited = store_writer.variant().await {
         return Ok(());
     }
@@ -41,8 +43,8 @@ pub(crate) async fn to_unlimited_mem(store_writer: &mut StoreWriter) -> Result<(
 }
 
 #[instrument(skip(store_writer))]
-pub(crate) async fn to_disk(
-    store_writer: &mut StoreWriter,
+pub(crate) async fn to_disk<F: crate::RangeCallback>(
+    store_writer: &mut StoreWriter<F>,
     path: PathBuf,
 ) -> Result<(), MigrationError> {
     if let StoreVariant::Disk = store_writer.variant().await {
@@ -72,7 +74,10 @@ pub enum MigrationError {
 }
 
 #[instrument(skip_all)]
-async fn migrate(store_writer: &mut StoreWriter, mut target: Store) -> Result<(), MigrationError> {
+async fn migrate<F: crate::RangeCallback>(
+    store_writer: &mut StoreWriter<F>,
+    mut target: Store,
+) -> Result<(), MigrationError> {
     let StoreWriter {
         curr_store,
         capacity_watcher,
@@ -100,7 +105,10 @@ async fn migrate(store_writer: &mut StoreWriter, mut target: Store) -> Result<()
     range_watch.send_diff(old_ranges, curr.ranges());
 
     if let Store::Disk(old_disk_store) = old {
-        old_disk_store.remove_files().await.map_err(MigrationError::Cleanup)?;
+        old_disk_store
+            .remove_files()
+            .await
+            .map_err(MigrationError::Cleanup)?;
     }
 
     info!("migration done");

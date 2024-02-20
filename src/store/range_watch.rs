@@ -6,12 +6,11 @@ use tokio::sync::mpsc;
 use tokio::sync::mpsc::error::TryRecvError;
 use tracing::{debug, instrument, trace};
 
-use crate::stream::{Report, ReportTx};
+use crate::RangeCallback;
 
 /// Ranges are never empty
 #[derive(Debug, Clone)]
 pub enum RangeUpdate {
-    /* TODO: rename prev to removed <dvdsk> */
     Replaced {
         removed: Range<u64>,
         new: Range<u64>,
@@ -30,19 +29,21 @@ pub(crate) struct Receiver {
     ranges: RangeSet<u64>,
 }
 
-#[derive(Clone)]
-pub(super) struct Sender {
+#[derive(Derivative, Clone)]
+#[derivative(Debug)]
+pub(super) struct Sender<R: RangeCallback> {
     watch_sender: mpsc::UnboundedSender<RangeUpdate>,
-    report_tx: ReportTx,
+    #[derivative(Debug = "ignore")]
+    range_callback: R,
 }
 
 // initial range is 0..0
-pub(super) fn channel(report_tx: ReportTx) -> (Sender, Receiver) {
+pub(super) fn channel<R: RangeCallback>(range_callback: R) -> (Sender<R>, Receiver) {
     let (tx, rx) = mpsc::unbounded_channel();
     (
         Sender {
             watch_sender: tx,
-            report_tx,
+            range_callback,
         },
         Receiver {
             rx,
@@ -51,7 +52,7 @@ pub(super) fn channel(report_tx: ReportTx) -> (Sender, Receiver) {
     )
 }
 
-/// Stream closed while requested range is not present 
+/// Stream closed while requested range is not present
 /// Data will never be received
 pub(super) struct StreamWasClosed;
 impl Receiver {
@@ -83,7 +84,7 @@ impl Receiver {
         while !self.ranges.contains(&needed_pos) {
             trace!("blocking read until range available");
             let Some(update) = self.rx.recv().await else {
-                return Err(StreamWasClosed)
+                return Err(StreamWasClosed);
             };
             self.process_update(update);
         }
@@ -91,7 +92,7 @@ impl Receiver {
     }
 }
 
-impl Sender {
+impl<R: RangeCallback> Sender<R> {
     pub(super) fn send(&self, update: RangeUpdate) {
         match &update {
             RangeUpdate::Replaced { removed: prev, new } => {
@@ -106,11 +107,7 @@ impl Sender {
         if let Err(_) = self.watch_sender.send(update.clone()) {
             tracing::debug!("Could not send new range, receiver dropped");
         }
-        if let Err(_) = self.report_tx.send(Report::Range(update)) {
-            tracing::debug!(
-                "Could not report new range to callbacks, stream must have been dropped"
-            );
-        }
+        self.range_callback.perform(update);
     }
 
     #[instrument(level = "debug", skip(self))]

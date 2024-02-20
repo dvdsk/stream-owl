@@ -1,11 +1,11 @@
 use std::thread;
 
 use tokio::runtime::{self, RuntimeFlavor};
-use tracing::{instrument, warn, debug};
+use tracing::{debug, instrument, warn};
 
 use crate::StreamHandle;
 
-fn drop_in_new_thread(handle: &mut StreamHandle) {
+fn drop_in_new_thread<F: crate::RangeCallback>(handle: &mut StreamHandle<F>) {
     debug!("dropping StreamHandle using new thread for async runtime");
     thread::scope(|s| {
         s.spawn(|| {
@@ -24,7 +24,10 @@ fn drop_in_new_thread(handle: &mut StreamHandle) {
     });
 }
 
-fn drop_in_current_rt(handle: &mut StreamHandle, rt: runtime::Handle) {
+fn drop_in_current_rt<F: crate::RangeCallback>(
+    handle: &mut StreamHandle<F>,
+    rt: runtime::Handle,
+) {
     debug!("dropping StreamHandle using current runtime");
     tokio::task::block_in_place(move || {
         if let Err(err) = rt.block_on(handle.flush()) {
@@ -33,7 +36,7 @@ fn drop_in_current_rt(handle: &mut StreamHandle, rt: runtime::Handle) {
     });
 }
 
-fn drop_in_new_runtime(handle: &mut StreamHandle) {
+fn drop_in_new_runtime<F: crate::RangeCallback>(handle: &mut StreamHandle<F>) {
     debug!("dropping StreamHandle in new runtime in current thread");
     let rt = match tokio::runtime::Runtime::new() {
         Ok(rt) => rt,
@@ -48,8 +51,8 @@ fn drop_in_new_runtime(handle: &mut StreamHandle) {
     }
 }
 
-impl Drop for StreamHandle {
-    #[instrument]
+impl<F: crate::RangeCallback> Drop for StreamHandle<F> {
+    #[instrument(skip(self))] // TODO remove skip self
     fn drop(&mut self) {
         if let Ok(rt) = tokio::runtime::Handle::try_current() {
             if let RuntimeFlavor::CurrentThread = rt.runtime_flavor() {

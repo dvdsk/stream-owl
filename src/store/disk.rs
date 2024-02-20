@@ -11,7 +11,7 @@ use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 use tracing::{debug, instrument};
 
 use crate::util::MaybeLimited;
-use crate::RangeUpdate;
+use super::RangeUpdate;
 
 use self::progress::Progress;
 

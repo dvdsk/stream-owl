@@ -1,4 +1,3 @@
-use std::sync::Arc;
 use std::time::Duration;
 
 use derivative::Derivative;
@@ -7,14 +6,16 @@ use tokio::sync::mpsc;
 
 use crate::network::{BandwidthAllowed, Network};
 use crate::retry::{RetryDurLimit, RetryLimit};
-use crate::{http_client, Manager, ManagerError, RangeUpdate, StreamError, StreamId};
+use crate::{
+    BandwidthCallback, LogCallback, Manager, ManagerError, RangeCallback, StreamError, StreamId,
+};
 
 use super::Callbacks;
 use super::StreamConfig;
 
-#[derive(Derivative, Default)]
+#[derive(Derivative)]
 #[derivative(Debug)]
-pub struct ManagerBuilder {
+pub struct ManagerBuilder<L, B, R> {
     stream_defaults: StreamConfig,
     restriction: Option<Network>,
     total_bandwidth: BandwidthAllowed,
@@ -25,14 +26,41 @@ pub struct ManagerBuilder {
     timeout: Duration,
 
     #[derivative(Debug(format_with = "crate::util::fmt_non_printable_option"))]
-    retry_log_callback: Option<Arc<dyn Fn(StreamId, Arc<http_client::Error>) + Send + Sync>>,
+    retry_log_callback: Option<L>,
     #[derivative(Debug(format_with = "crate::util::fmt_non_printable_option"))]
-    bandwidth_callback: Option<Arc<dyn Fn(StreamId, usize) + Send + Sync>>,
+    bandwidth_callback: Option<B>,
     #[derivative(Debug(format_with = "crate::util::fmt_non_printable_option"))]
-    range_callback: Option<Arc<dyn Fn(StreamId, RangeUpdate) + Send + Sync>>,
+    range_callback: Option<R>,
 }
 
-impl ManagerBuilder {
+impl<L, B, R> Default for ManagerBuilder<L, B, R>
+where
+    L: LogCallback,
+    B: BandwidthCallback,
+    R: RangeCallback,
+{
+    fn default() -> Self {
+        Self {
+            stream_defaults: StreamConfig::default(),
+            restriction: None,
+            total_bandwidth: BandwidthAllowed::default(),
+            retry_disabled: false,
+            max_retries: RetryLimit::default(),
+            max_retry_dur: RetryDurLimit::default(),
+            timeout: Duration::from_secs(3),
+            retry_log_callback: None,
+            bandwidth_callback: None,
+            range_callback: None,
+        }
+    }
+}
+
+impl<L, B, R> ManagerBuilder<L, B, R>
+where
+    L: LogCallback,
+    B: BandwidthCallback,
+    R: RangeCallback,
+{
     pub fn with_stream_defaults(mut self, defaults: StreamConfig) -> Self {
         self.stream_defaults = defaults;
         self
@@ -85,37 +113,28 @@ impl ManagerBuilder {
 
     /// Perform an callback whenever a retry happens. Useful to log
     /// errors.
-    pub fn with_retry_callback(
-        mut self,
-        callback: impl Fn(StreamId, Arc<http_client::Error>) + Send + Sync + 'static,
-    ) -> Self {
-        self.retry_log_callback = Some(Arc::new(callback));
+    pub fn with_retry_callback(mut self, callback: L) -> Self {
+        self.retry_log_callback = Some(callback);
         self
     }
 
     /// Perform an callback whenever the bandwidth has an update
-    pub fn with_bandwidth_callback(
-        mut self,
-        callback: impl Fn(StreamId, usize) + Send + Sync + 'static,
-    ) -> Self {
-        self.bandwidth_callback = Some(Arc::new(callback));
+    pub fn with_bandwidth_callback(mut self, callback: B) -> Self {
+        self.bandwidth_callback = Some(callback);
         self
     }
 
     /// Perform an callback whenever the range locally available
     /// has changed
-    pub fn with_range_callback(
-        mut self,
-        callback: impl Fn(StreamId, RangeUpdate) + Send + Sync + 'static,
-    ) -> Self {
-        self.range_callback = Some(Arc::new(callback));
+    pub fn with_range_callback(mut self, callback: R) -> Self {
+        self.range_callback = Some(callback);
         self
     }
 
     pub fn build(
         self,
     ) -> (
-        Manager,
+        Manager<R>,
         impl Future<Output = ManagerError>,
         mpsc::UnboundedReceiver<(StreamId, StreamError)>,
     ) {
@@ -123,9 +142,9 @@ impl ManagerBuilder {
         let (err_tx, err_rx) = mpsc::unbounded_channel();
 
         let callbacks = Callbacks {
-            retry_log_callback: self.retry_log_callback,
-            bandwidth_callback: self.bandwidth_callback,
-            range_callback: self.range_callback,
+            retry_log: self.retry_log_callback,
+            bandwidth: self.bandwidth_callback,
+            range: self.range_callback,
         };
         (
             Manager {

@@ -5,8 +5,8 @@ mod reader;
 pub mod store;
 
 pub mod http_client;
-mod stream;
 mod retry;
+mod stream;
 /// Glue between store and stream/http_client
 mod target;
 
@@ -30,3 +30,22 @@ pub use manager::stream::Id as StreamId;
 pub use manager::stream::ManagedHandle as ManagedStreamHandle;
 pub use manager::Error as ManagerError;
 pub use manager::Manager;
+
+// doing this instead of type aliases which are unstable
+macro_rules! callback {
+    ($name:ident, $arg:ty) => {
+        trait $name: Send + Clone + 'static {
+            fn perform(&mut self, update: $arg);
+        }
+
+        impl<C: FnMut($arg) + Send + Clone + 'static> $name for C {
+            fn perform(&mut self, update: $arg) {
+                (self)(update)
+            }
+        }
+    };
+}
+
+callback!(RangeCallback, RangeUpdate);
+callback!(LogCallback, RangeUpdate);
+callback!(BandwidthCallback, RangeUpdate);

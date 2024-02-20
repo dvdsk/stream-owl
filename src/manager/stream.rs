@@ -12,13 +12,17 @@ use crate::manager::Command;
 use crate::network::{BandwidthLim, BandwidthLimit};
 use crate::store::migrate::MigrationError;
 use crate::store::{self, StorageChoice, WriterToken};
-use crate::stream::{blocking, Report};
+use crate::stream::blocking;
 use crate::stream::GetReaderError;
 use crate::target::StreamTarget;
-use crate::{util, StreamCanceld, StreamError, StreamHandle};
+use crate::{
+    util, BandwidthCallback, LogCallback, RangeCallback, StreamCanceld, StreamError, StreamHandle,
+};
 
 mod config;
 pub use config::StreamConfig;
+
+use super::Callbacks;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Id(usize);
@@ -48,16 +52,16 @@ macro_rules! managed {
 
 #[derive(Derivative)]
 #[derivative(Debug)]
-pub struct ManagedHandle {
+pub struct ManagedHandle<F: crate::RangeCallback> {
     /// allows the handle to send a message
     /// to the manager to drop the streams future
     /// or increase/decrease priority.
     #[derivative(Debug = "ignore")]
-    pub(crate) cmd_manager: Sender<Command>,
-    pub(crate) handle: StreamHandle,
+    pub(crate) cmd_manager: Sender<Command<F>>,
+    pub(crate) handle: StreamHandle<F>,
 }
 
-impl Drop for ManagedHandle {
+impl<F: crate::RangeCallback> Drop for ManagedHandle<F> {
     fn drop(&mut self) {
         self.cmd_manager
             .try_send(Command::CancelStream(self.id()))
@@ -65,7 +69,7 @@ impl Drop for ManagedHandle {
     }
 }
 
-impl ManagedHandle {
+impl<F: crate::RangeCallback> ManagedHandle<F> {
     pub fn set_priority(&mut self, _arg: i32) {
         todo!()
     }
@@ -85,7 +89,7 @@ impl ManagedHandle {
 
     managed! {try_get_reader; Result<crate::reader::Reader, GetReaderError>}
 }
-impl ManagedHandle {
+impl<F: crate::RangeCallback> ManagedHandle<F> {
     blocking! {pause - pause_blocking}
     blocking! {unpause - unpause_blocking}
     blocking! {limit_bandwidth - limit_bandwidth_blocking bandwidth: BandwidthLimit}
@@ -98,29 +102,30 @@ impl ManagedHandle {
 
 impl StreamConfig {
     #[tracing::instrument]
-    pub async fn start(
+    pub async fn start<L: LogCallback, B: BandwidthCallback, R: RangeCallback>(
         self,
         url: http::Uri,
-        manager_tx: Sender<Command>,
-        report_tx: Sender<Report>,
+        manager_tx: Sender<Command<R>>,
+        callbacks: Callbacks<L, B, R>,
     ) -> Result<
         (
-            ManagedHandle,
+            ManagedHandle<R>,
             impl Future<Output = Result<StreamCanceld, StreamError>> + Send + 'static,
         ),
         crate::store::Error,
     > {
         let stream_size = Size::default();
-
+        let range_callback = callbacks.range.unwrap(); // TODO fix this unwrap (move into
+                                                       // StreamConfig)
         let (store_reader, store_writer) = match self.storage {
             StorageChoice::Disk(path) => {
-                store::new_disk_backed(path, stream_size.clone(), report_tx.clone()).await?
+                store::new_disk_backed(path, stream_size.clone(), range_callback).await?
             }
             StorageChoice::MemLimited(limit) => {
-                store::new_limited_mem_backed(limit, stream_size.clone(), report_tx.clone())?
+                store::new_limited_mem_backed(limit, stream_size.clone(), range_callback)?
             }
             StorageChoice::MemUnlimited => {
-                store::new_unlimited_mem_backed(stream_size.clone(), report_tx.clone())
+                store::new_unlimited_mem_backed(stream_size.clone(), range_callback)
             }
         };
 
@@ -148,7 +153,7 @@ impl StreamConfig {
             crate::retry::Decider::with_limits(
                 self.max_retries,
                 self.max_retry_dur,
-                report_tx.clone(),
+                callbacks.retry_log,
             )
         };
 
@@ -157,7 +162,7 @@ impl StreamConfig {
         let stream_task = crate::stream::task::restarting_on_seek(
             url,
             target,
-            report_tx,
+            callbacks.bandwidth,
             seek_rx,
             self.restriction,
             bandwidth_lim,

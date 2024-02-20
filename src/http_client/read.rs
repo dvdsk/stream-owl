@@ -67,9 +67,9 @@ impl Reader {
     }
 
     #[tracing::instrument(level = "trace", skip(target, self))]
-    pub(crate) async fn stream_to_writer(
+    pub(crate) async fn stream_to_writer<F: crate::RangeCallback>(
         &mut self,
-        target: &mut StreamTarget,
+        target: &mut StreamTarget<F>,
         timeout: Duration,
     ) -> Result<(), Error> {
         if let Reader::PartialData { range, .. } = self {

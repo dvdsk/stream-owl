@@ -19,9 +19,9 @@ pub(crate) use capacity::Bounds as CapacityBounds;
 use capacity::CapacityNotifier;
 pub(crate) use capacity::{CapacityWatcher, WriterToken};
 
+use crate::RangeCallback;
 use crate::http_client::Size;
-use crate::stream::ReportTx;
-use crate::RangeUpdate;
+use crate::store::range_watch::RangeUpdate;
 
 #[derive(Debug)]
 pub(crate) struct StoreReader {
@@ -31,16 +31,16 @@ pub(crate) struct StoreReader {
     stream_size: Size,
 }
 
-#[derive(Derivative)]
-#[derivative(Debug, Clone)]
-pub(crate) struct StoreWriter {
+#[derive(Derivative, Clone)]
+#[derivative(Debug)]
+pub(crate) struct StoreWriter<R: RangeCallback> {
     pub(crate) curr_store: Arc<Mutex<Store>>,
     pub(crate) capacity_watcher: CapacityWatcher,
-    #[derivative(Debug = "ignore")]
-    range_watch: range_watch::Sender,
+    #[derivative(Debug="ignore")]
+    range_watch: range_watch::Sender<R>,
 }
 
-impl Drop for StoreWriter {
+impl<R: RangeCallback> Drop for StoreWriter<R> {
     fn drop(&mut self) {
         self.range_watch.close()
     }
@@ -80,14 +80,14 @@ pub enum Error {
     OpeningDisk(#[from] disk::OpenError),
 }
 
-fn store_handles(
+fn store_handles<R: RangeCallback>(
     store: Store,
     rx: range_watch::Receiver,
     capacity: CapacityNotifier,
     capacity_watcher: CapacityWatcher,
-    range_watch: range_watch::Sender,
+    range_watch: range_watch::Sender<R>,
     stream_size: Size,
-) -> (StoreReader, StoreWriter) {
+) -> (StoreReader, StoreWriter<R>) {
     let curr_store = Arc::new(Mutex::new(store));
     (
         StoreReader {
@@ -104,14 +104,14 @@ fn store_handles(
     )
 }
 
-#[tracing::instrument]
-pub(crate) async fn new_disk_backed(
+#[tracing::instrument(skip(range_callback))]
+pub(crate) async fn new_disk_backed<F: RangeCallback>(
     path: PathBuf,
     stream_size: Size,
-    report_tx: ReportTx,
-) -> Result<(StoreReader, StoreWriter), disk::OpenError> {
+    range_callback: F,
+) -> Result<(StoreReader, StoreWriter<F>), disk::OpenError> {
     let (capacity_watcher, capacity) = capacity::new();
-    let (tx, rx) = range_watch::channel(report_tx);
+    let (tx, rx) = range_watch::channel(range_callback);
 
     let (disk, already_downloaded) = disk::Disk::new(path).await?;
     for range in already_downloaded {
@@ -127,14 +127,14 @@ pub(crate) async fn new_disk_backed(
     ))
 }
 
-#[tracing::instrument]
-pub(crate) fn new_limited_mem_backed(
+#[tracing::instrument(skip(range_callback))]
+pub(crate) fn new_limited_mem_backed<R: RangeCallback>(
     max_cap: usize,
     stream_size: Size,
-    report_tx: ReportTx,
-) -> Result<(StoreReader, StoreWriter), limited_mem::CouldNotAllocate> {
+    range_callback: R,
+) -> Result<(StoreReader, StoreWriter<R>), limited_mem::CouldNotAllocate> {
     let (capacity_watcher, capacity) = capacity::new();
-    let (tx, rx) = range_watch::channel(report_tx);
+    let (tx, rx) = range_watch::channel(range_callback);
     let mem = limited_mem::Memory::new(max_cap)?;
     Ok(store_handles(
         Store::MemLimited(mem),
@@ -146,13 +146,13 @@ pub(crate) fn new_limited_mem_backed(
     ))
 }
 
-#[tracing::instrument]
-pub(crate) fn new_unlimited_mem_backed(
+#[tracing::instrument(skip(range_callback))]
+pub(crate) fn new_unlimited_mem_backed<R: RangeCallback>(
     stream_size: Size,
-    report_tx: ReportTx,
-) -> (StoreReader, StoreWriter) {
+    range_callback: R,
+) -> (StoreReader, StoreWriter<R>) {
     let (capacity_watcher, capacity) = capacity::new();
-    let (tx, rx) = range_watch::channel(report_tx);
+    let (tx, rx) = range_watch::channel(range_callback);
     let mem = unlimited_mem::Memory::new();
     store_handles(
         Store::MemUnlimited(mem),
@@ -164,7 +164,7 @@ pub(crate) fn new_unlimited_mem_backed(
     )
 }
 
-impl StoreWriter {
+impl<F: crate::RangeCallback> StoreWriter<F> {
     /// Note this is not an implementation of the std::io::Write tait. Ok(0) does
     /// **not** mean we will never be able to write again.
     #[instrument(level = "trace", skip(self, buf))]

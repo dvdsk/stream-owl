@@ -1,24 +1,29 @@
 use std::collections::HashMap;
 
+use derivative::Derivative;
 use futures::FutureExt;
 use futures_concurrency::future::Race;
 use tokio::sync::mpsc::{error::SendError, Receiver, Sender, UnboundedSender};
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::oneshot;
 use tokio::task::{AbortHandle, JoinSet};
 use tracing::{info, trace};
 
 use crate::stream::StreamEnded;
-use crate::{stream, ManagedStreamHandle, StreamError, StreamId};
+use crate::{ManagedStreamHandle, StreamError, StreamId, RangeCallback, BandwidthCallback, LogCallback};
 
 use super::stream::StreamConfig;
 use super::Callbacks;
 
+mod bandwidth;
 mod race_results;
 use race_results::Res;
 
-pub(crate) enum Command {
+#[derive(Derivative)]
+#[derivative(Debug)]
+pub(crate) enum Command<F: RangeCallback> {
     AddStream {
-        handle_tx: oneshot::Sender<ManagedStreamHandle>,
+        #[derivative(Debug = "ignore")]
+        handle_tx: oneshot::Sender<ManagedStreamHandle<F>>,
         config: StreamConfig,
         url: http::Uri,
     },
@@ -30,26 +35,28 @@ async fn wait_forever() -> StreamEnded {
     unreachable!()
 }
 
-struct Tomato {
-    cmd_tx: Sender<Command>,
+struct Tomato<L: LogCallback, B: BandwidthCallback, R: RangeCallback> {
+    bandwidth_ctrl: bandwidth::Controller,
+
+    cmd_tx: Sender<Command<R>>,
     err_tx: UnboundedSender<(StreamId, StreamError)>,
-    report_tx: mpsc::Sender<stream::Report>,
     streams: JoinSet<StreamEnded>,
     abort_handles: HashMap<StreamId, AbortHandle>,
+    callbacks: Callbacks<L, B, R>,
 }
 
-impl Tomato {
+impl<L: LogCallback, B: BandwidthCallback, R: RangeCallback> Tomato<L, B, R> {
     async fn add_stream(
         &mut self,
-        handle_tx: oneshot::Sender<ManagedStreamHandle>,
+        handle_tx: oneshot::Sender<ManagedStreamHandle<R>>,
         config: StreamConfig,
         url: http::Uri,
     ) -> Result<(), crate::store::Error> {
         let cmd_tx = self.cmd_tx.clone();
-        let report_tx = self.report_tx.clone();
+        let callbacks = self.callbacks.clone();
         let (handle, stream_task) = async move {
             let id = StreamId::new();
-            let (handle, stream_task) = config.start(url, cmd_tx, report_tx).await?;
+            let (handle, stream_task) = config.start(url, cmd_tx, callbacks).await?;
             let stream_task = stream_task.map(move |res| StreamEnded { res, id });
             Result::<_, crate::store::Error>::Ok((handle, stream_task))
         }
@@ -66,55 +73,43 @@ impl Tomato {
     }
 
     fn new(
-        cmd_tx: Sender<Command>,
+        cmd_tx: Sender<Command<R>>,
         err_tx: UnboundedSender<(StreamId, StreamError)>,
-    ) -> (Receiver<stream::Report>, Self) {
-        let (report_tx, mut report_rx) = mpsc::channel(12);
+        callbacks: Callbacks<L, B, R>,
+    ) -> Self {
         let mut streams = JoinSet::new();
         streams.spawn(wait_forever());
-        let mut abort_handles = HashMap::new();
-
-        (
-            report_rx,
-            Self {
-                cmd_tx,
-                err_tx,
-                report_tx,
-                streams,
-                abort_handles,
-            },
-        )
+        Self {
+            cmd_tx,
+            err_tx,
+            streams,
+            abort_handles: HashMap::new(),
+            callbacks,
+            bandwidth_ctrl: bandwidth::Controller,
+        }
     }
 }
 
-pub(super) async fn run(
-    cmd_tx: Sender<Command>,
-    mut cmd_rx: Receiver<Command>,
+pub(super) async fn run<L: LogCallback, B: BandwidthCallback, R: RangeCallback>(
+    cmd_tx: Sender<Command<R>>,
+    mut cmd_rx: Receiver<Command<R>>,
     err_tx: UnboundedSender<(StreamId, StreamError)>,
-    callbacks: Callbacks,
+    callbacks: Callbacks<L, B, R>,
 ) -> super::Error {
     use Command::*;
 
-    let (mut report_rx, mut tomato) = Tomato::new(cmd_tx, err_tx);
+    let mut tomato = Tomato::new(cmd_tx, err_tx, callbacks);
 
     loop {
-        let new_report = report_rx.recv().map(Res::from);
         let new_cmd = cmd_rx.recv().map(Res::from);
         let stream_err = tomato.streams.join_next().map(Res::from);
 
-        match (new_cmd, stream_err, new_report).race().await {
-            Res::StreamReport { id, report } => todo!(),
+        match (new_cmd, stream_err).race().await {
             Res::NewCmd(AddStream {
                 handle_tx,
                 config,
                 url,
-            }) => tomato.add_stream(
-                handle_tx,
-                config,
-                url,
-            )
-            .await
-            .unwrap(),
+            }) => tomato.add_stream(handle_tx, config, url).await.unwrap(),
             Res::NewCmd(CancelStream(id)) => {
                 if let Some(handle) = tomato.abort_handles.remove(&id) {
                     handle.abort();

@@ -8,7 +8,7 @@ use hyper::body::Incoming;
 use tracing::{debug, info, instrument, warn};
 
 use crate::network::{BandwidthLim, Network};
-use crate::retry;
+use crate::{retry, RangeCallback};
 use crate::stream::ReportTx;
 use crate::target::StreamTarget;
 
@@ -176,10 +176,11 @@ pub(crate) struct ClientBuilder {
 }
 
 impl ClientBuilder {
-    #[tracing::instrument(level = "debug", skip(report_tx))]
-    pub(crate) async fn connect(
+    // TODO remove skip target
+    #[tracing::instrument(level = "debug", skip(report_tx, target))]
+    pub(crate) async fn connect<F: crate::RangeCallback>(
         self,
-        target: &mut StreamTarget,
+        target: &mut StreamTarget<F>,
         report_tx: &ReportTx,
         timeout: Duration,
     ) -> Result<StreamingClient, error::Error> {
@@ -282,13 +283,14 @@ impl ClientBuilder {
 }
 
 impl StreamingClient {
-    #[tracing::instrument(level = "debug", skip(bandwidth_lim, report_tx), ret)]
-    pub(crate) async fn new(
+    // TODO remove skip target
+    #[tracing::instrument(level = "debug", skip(bandwidth_lim, report_tx, target), ret)]
+    pub(crate) async fn new<F: RangeCallback>(
         url: hyper::Uri,
         restriction: Option<Network>,
         bandwidth_lim: BandwidthLim,
         size: Size,
-        target: &mut StreamTarget,
+        target: &mut StreamTarget<F>,
         report_tx: ReportTx,
         retry: &mut retry::Decider,
         timeout: Duration,

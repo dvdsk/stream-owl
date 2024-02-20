@@ -19,24 +19,25 @@ macro_rules! tracing_record {
     };
 }
 
+use crate::RangeCallback;
 use crate::http_client::Size;
 use crate::store::StoreWriter;
 use crate::store::WriterToken;
 
 #[derive(Debug)]
-pub(crate) struct StreamTarget {
+pub(crate) struct StreamTarget<F: RangeCallback> {
     /// on seek this pos is updated, in between seeks
     /// it increments with the number of bytes written
     pos: AtomicU64,
-    store: StoreWriter,
+    store: StoreWriter<F>,
     pub(crate) bandwidth: Arc<AtomicUsize>,
     pub(crate) writer_token: WriterToken,
     pub(crate) chunk_size: ChunkSize,
 }
 
-impl StreamTarget {
+impl<F: RangeCallback> StreamTarget<F> {
     pub(crate) fn new(
-        store: StoreWriter,
+        store: StoreWriter<F>,
         start_pos: u64,
         chunk_size: ChunkSizeBuilder,
         writer_token: WriterToken,
@@ -121,7 +122,7 @@ impl StreamTarget {
     }
 }
 
-impl StreamTarget {
+impl<F: RangeCallback> StreamTarget<F> {
     /// can be cancelled at any time by a (stream) seek
     #[instrument(level = "trace", skip(self, buf), fields(buf_len = buf.len()))]
     pub(crate) async fn append(&mut self, buf: &[u8]) -> Result<usize, std::io::Error> {

@@ -1,16 +1,12 @@
 use tokio::task::JoinError;
 
-use crate::stream::{StreamEnded, Report};
-use crate::{StreamId, StreamError};
+use crate::stream::StreamEnded;
+use crate::{StreamId, StreamError, RangeCallback};
 
 use super::Command;
 
 
-pub(super) enum Res {
-    StreamReport {
-        id: StreamId,
-        report: Report,
-    },
+pub(super) enum Res<R: RangeCallback> {
     StreamComplete {
         id: StreamId,
     },
@@ -18,12 +14,12 @@ pub(super) enum Res {
         id: StreamId,
         error: StreamError,
     },
-    NewCmd(Command),
+    NewCmd(Command<R>),
     Dropped,
 }
 
-impl From<Option<Command>> for Res {
-    fn from(value: Option<Command>) -> Self {
+impl<R: RangeCallback> From<Option<Command<R>>> for Res<R> {
+    fn from(value: Option<Command<R>>) -> Self {
         match value {
             Some(cmd) => Res::NewCmd(cmd),
             None => Res::Dropped,
@@ -31,7 +27,7 @@ impl From<Option<Command>> for Res {
     }
 }
 
-impl From<Option<Result<StreamEnded, JoinError>>> for Res {
+impl<R: RangeCallback> From<Option<Result<StreamEnded, JoinError>>> for Res<R> {
     fn from(value: Option<Result<StreamEnded, JoinError>>) -> Self {
         let StreamEnded { id, res } = value
             .expect("streams JoinSet should never be empty")
@@ -41,12 +37,5 @@ impl From<Option<Result<StreamEnded, JoinError>>> for Res {
         } else {
             Res::StreamComplete { id }
         }
-    }
-}
-
-impl From<Option<Report>> for Res {
-    fn from(report: Option<Report>) -> Self {
-        let report = report.expect("report_rx is in the same scope as the recv call");
-        Res::StreamReport { id: todo!(), report }
     }
 }

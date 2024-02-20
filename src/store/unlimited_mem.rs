@@ -5,7 +5,7 @@ use std::ops::Range;
 
 use rangemap::set::RangeSet;
 
-use crate::RangeUpdate;
+use super::RangeUpdate;
 use crate::util::MaybeLimited;
 
 mod range_store;

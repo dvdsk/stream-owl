@@ -27,7 +27,7 @@ use tracing::{debug, instrument, trace};
 use rangemap::set::RangeSet;
 
 use crate::util::{MaybeLimited, VecDequeExt};
-use crate::RangeUpdate;
+use super::RangeUpdate;
 
 #[derive(Derivative)]
 #[derivative(Debug)]

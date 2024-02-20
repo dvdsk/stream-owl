@@ -5,6 +5,7 @@ use crate::http_client::Error;
 use crate::stream::{Report, ReportTx};
 use derivative::Derivative;
 use http::StatusCode;
+use tokio::sync::mpsc::error::TrySendError;
 use tracing::{debug, instrument, trace, warn};
 
 #[derive(Derivative)]
@@ -229,7 +230,15 @@ impl Decider {
 
         let error = Arc::new(err);
         if let Some(ref mut report_tx) = self.log_to_user {
-            let _ignore_closed_channel = report_tx.send(Report::RetriedError(error.clone()));
+            match report_tx.try_send(Report::RetriedError(error.clone())) {
+                Ok(()) => (),
+                Err(TrySendError::Full(error)) => {
+                    tracing::error!("Report queue full, could not report retry due to error: {err}")
+                }
+                Err(TrySendError::Closed(_)) => {
+                    unreachable!("report rx should not drop before stream task is canceld")
+                }
+            }
         }
         self.register(error, approach);
         CouldSucceed::Yes
