@@ -8,9 +8,8 @@ use hyper::body::Incoming;
 use tracing::{debug, info, instrument, warn};
 
 use crate::network::{BandwidthLim, Network};
-use crate::{retry, RangeCallback};
-use crate::stream::ReportTx;
 use crate::target::StreamTarget;
+use crate::{retry, BandwidthCallback, RangeCallback, LogCallback};
 
 mod read;
 use read::Reader;
@@ -177,11 +176,10 @@ pub(crate) struct ClientBuilder {
 
 impl ClientBuilder {
     // TODO remove skip target
-    #[tracing::instrument(level = "debug", skip(report_tx, target))]
-    pub(crate) async fn connect<F: crate::RangeCallback>(
+    #[tracing::instrument(level = "debug", skip(target))]
+    pub(crate) async fn connect<B: BandwidthCallback, R: RangeCallback>(
         self,
-        target: &mut StreamTarget<F>,
-        report_tx: &ReportTx,
+        target: &mut StreamTarget<B, R>,
         timeout: Duration,
     ) -> Result<StreamingClient, error::Error> {
         debug!(
@@ -207,7 +205,7 @@ impl ClientBuilder {
             &restriction,
             &bandwidth_lim,
             target.bandwidth.clone(),
-            report_tx.clone(),
+            target.bandwidth_callback.clone(),
             timeout,
         )
         .await?;
@@ -231,7 +229,7 @@ impl ClientBuilder {
                     &restriction,
                     &bandwidth_lim,
                     target.bandwidth.clone(),
-                    report_tx.clone(),
+                    target.bandwidth_callback.clone(),
                     timeout,
                 )
                 .await?;
@@ -284,15 +282,14 @@ impl ClientBuilder {
 
 impl StreamingClient {
     // TODO remove skip target
-    #[tracing::instrument(level = "debug", skip(bandwidth_lim, report_tx, target), ret)]
-    pub(crate) async fn new<F: RangeCallback>(
+    #[tracing::instrument(level = "debug", skip(bandwidth_lim, target), ret)]
+    pub(crate) async fn new<L: LogCallback, B: BandwidthCallback, R: RangeCallback>(
         url: hyper::Uri,
         restriction: Option<Network>,
         bandwidth_lim: BandwidthLim,
         size: Size,
-        target: &mut StreamTarget<F>,
-        report_tx: ReportTx,
-        retry: &mut retry::Decider,
+        target: &mut StreamTarget<B, R>,
+        retry: &mut retry::Decider<L>,
         timeout: Duration,
     ) -> Result<Self, error::Error> {
         let builder = ClientBuilder {
@@ -304,7 +301,7 @@ impl StreamingClient {
         };
 
         loop {
-            let res = builder.clone().connect(target, &report_tx, timeout).await;
+            let res = builder.clone().connect(target, timeout).await;
 
             let Err(err) = res else {
                 return res;

@@ -9,7 +9,9 @@ use tokio::task::{AbortHandle, JoinSet};
 use tracing::{info, trace};
 
 use crate::stream::StreamEnded;
-use crate::{ManagedStreamHandle, StreamError, StreamId, RangeCallback, BandwidthCallback, LogCallback};
+use crate::{
+    BandwidthCallback, LogCallback, ManagedStreamHandle, RangeCallback, StreamError, StreamId,
+};
 
 use super::stream::StreamConfig;
 use super::Callbacks;
@@ -20,10 +22,11 @@ use race_results::Res;
 
 #[derive(Derivative)]
 #[derivative(Debug)]
-pub(crate) enum Command<F: RangeCallback> {
+pub(crate) enum Command<R: RangeCallback> {
     AddStream {
         #[derivative(Debug = "ignore")]
-        handle_tx: oneshot::Sender<ManagedStreamHandle<F>>,
+        /* TODO: get rid of generics <21-02-24, dvdsk noreply@davidsk.dev> */
+        handle_tx: oneshot::Sender<ManagedStreamHandle<R>>,
         config: StreamConfig,
         url: http::Uri,
     },

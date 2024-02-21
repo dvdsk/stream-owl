@@ -111,7 +111,7 @@ pub(crate) async fn new_disk_backed<F: RangeCallback>(
     range_callback: F,
 ) -> Result<(StoreReader, StoreWriter<F>), disk::OpenError> {
     let (capacity_watcher, capacity) = capacity::new();
-    let (tx, rx) = range_watch::channel(range_callback);
+    let (mut tx, rx) = range_watch::channel(range_callback);
 
     let (disk, already_downloaded) = disk::Disk::new(path).await?;
     for range in already_downloaded {

@@ -2,10 +2,9 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use crate::http_client::Error;
-use crate::stream::{Report, ReportTx};
+use crate::LogCallback;
 use derivative::Derivative;
 use http::StatusCode;
-use tokio::sync::mpsc::error::TrySendError;
 use tracing::{debug, instrument, trace, warn};
 
 #[derive(Derivative)]
@@ -124,9 +123,10 @@ limit_type!(RetryDurLimit: Duration, Duration::ZERO, Duration::MAX);
 
 #[derive(Derivative)]
 #[derivative(Debug)]
-pub(crate) struct Decider {
+pub(crate) struct Decider<L> {
     recent: Vec<Event>,
-    log_to_user: Option<ReportTx>,
+    #[derivative(Debug = "ignore")]
+    log_to_user: L,
     retry_disabled: bool,
     /// how often the **same error** may happen before we give up
     retry_limit: RetryLimit,
@@ -134,25 +134,27 @@ pub(crate) struct Decider {
     max_retry_dur: RetryDurLimit,
 }
 
-impl Decider {
+impl<L: LogCallback> Decider<L> {
     pub(crate) fn with_limits(
         max_retries: RetryLimit,
         max_retry_dur: RetryDurLimit,
-        log_to_user: ReportTx,
+        log_to_user: L,
     ) -> Self {
         Self {
             retry_disabled: false,
             recent: Vec::new(),
-            log_to_user: Some(log_to_user),
+            log_to_user,
             retry_limit: max_retries,
             max_retry_dur,
         }
     }
 
-    pub(crate) fn disabled() -> Decider {
+    // argument makes no sense however we need it to keep the return
+    // type generic :(
+    pub(crate) fn disabled(log_to_user: L) -> Decider<L> {
         Self {
             retry_disabled: true,
-            log_to_user: None,
+            log_to_user,
             recent: Vec::new(),
             retry_limit: RetryLimit::default(),
             max_retry_dur: RetryDurLimit::default(),
@@ -229,17 +231,7 @@ impl Decider {
         }
 
         let error = Arc::new(err);
-        if let Some(ref mut report_tx) = self.log_to_user {
-            match report_tx.try_send(Report::RetriedError(error.clone())) {
-                Ok(()) => (),
-                Err(TrySendError::Full(error)) => {
-                    tracing::error!("Report queue full, could not report retry due to error: {err}")
-                }
-                Err(TrySendError::Closed(_)) => {
-                    unreachable!("report rx should not drop before stream task is canceld")
-                }
-            }
-        }
+        self.log_to_user.perform(error.clone());
         self.register(error, approach);
         CouldSucceed::Yes
     }

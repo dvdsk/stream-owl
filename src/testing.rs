@@ -11,8 +11,8 @@ use tokio::task::{JoinError, JoinHandle};
 use tracing_subscriber::fmt::time::uptime;
 
 use crate::{
-    BandwidthCallback, LogCallback, RangeCallback, StreamBuilder, StreamCanceld, StreamError,
-    StreamHandle,
+    BandwidthCallback, LogCallback, Placeholder, RangeCallback, StreamBuilder, StreamCanceld,
+    StreamError, StreamHandle,
 };
 
 mod pausable_server;
@@ -46,14 +46,21 @@ pub fn test_data(bytes: u32) -> Vec<u8> {
     test_data_range(0..bytes)
 }
 
-pub fn setup_reader_test<L: LogCallback, B: BandwidthCallback, R: RangeCallback>(
+pub fn setup_reader_test<L, B, R>(
     test_done: &Arc<Notify>,
     test_file_size: u32,
-    configure: impl FnOnce(StreamBuilder<false, L, B, R>) -> StreamBuilder<true, L, B, R>
+    configure: impl FnOnce(
+            StreamBuilder<false, Placeholder, Placeholder, Placeholder>,
+        ) -> StreamBuilder<true, L, B, R>
         + Send
         + 'static,
     server: impl FnOnce(u64) -> (http::Uri, JoinHandle<Result<(), std::io::Error>>) + Send + 'static,
-) -> (thread::JoinHandle<TestEnded>, StreamHandle<R>) {
+) -> (thread::JoinHandle<TestEnded>, StreamHandle<R>)
+where
+    L: LogCallback,
+    B: BandwidthCallback,
+    R: RangeCallback,
+{
     let (runtime_thread, handle) = {
         let test_done = test_done.clone();
         let (tx, rx) = mpsc::channel();

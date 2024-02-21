@@ -23,7 +23,7 @@ use tokio::net::TcpStream;
 use tracing::{debug, instrument, trace};
 
 use crate::network::{BandwidthAllowed, BandwidthLim, BandwidthRx};
-use crate::BandwidthLimit;
+use crate::{BandwidthLimit, BandwidthCallback};
 
 mod tcpstream_ext;
 use tcpstream_ext::TcpStreamExt;
@@ -48,7 +48,7 @@ pin_project! {
     /// After a (short) while the rate limit will effectively be
     /// used by the transmitter.
     #[derive(Debug)]
-    pub struct ThrottlableIo {
+    pub struct ThrottlableIo<B> {
         #[pin]
         inner: TcpStream,
         limiter: Option<RateLimiter<NotKeyed, InMemoryState, MonotonicClock, NoOpMiddleware<Instant>>>,
@@ -57,16 +57,16 @@ pin_project! {
         still_pending_bytes: u32,
         new_bandwidth_lim: Arc<Mutex<BandwidthRx>>,
         os_socket_buf_size: usize,
-        bandwidth_monitor: BandwidthMonitor,
+        bandwidth_monitor: BandwidthMonitor<B>,
     }
 }
 
-impl ThrottlableIo {
+impl<B> ThrottlableIo<B> {
     /// Wrap a type implementing Tokio's IO traits.
     pub fn new(
         inner: TcpStream,
         bandwidth_lim: &BandwidthLim,
-        bandwidth_monitor: BandwidthMonitor,
+        bandwidth_monitor: BandwidthMonitor<B>,
     ) -> Result<Self, io::Error> {
         Ok(Self {
             os_socket_buf_size: inner.send_buf_size()?,
@@ -96,7 +96,7 @@ impl ThrottlableIo {
     }
 }
 
-impl ThrottlableIo {
+impl<B> ThrottlableIo<B> {
     #[instrument(level = "trace", skip(self, cx))]
     fn sleep(self: Pin<&mut Self>, cx: &mut Context<'_>, next_call_allowed: Instant) {
         let this = self.project();
@@ -220,7 +220,7 @@ impl ThrottlableIo {
     }
 }
 
-impl hyper::rt::Read for ThrottlableIo {
+impl<B: BandwidthCallback> hyper::rt::Read for ThrottlableIo<B> {
     fn poll_read(
         mut self: Pin<&mut Self>,
         cx: &mut Context<'_>,
@@ -254,7 +254,7 @@ impl hyper::rt::Read for ThrottlableIo {
     }
 }
 
-impl hyper::rt::Write for ThrottlableIo {
+impl<B> hyper::rt::Write for ThrottlableIo<B> {
     fn poll_write(
         self: Pin<&mut Self>,
         cx: &mut Context<'_>,

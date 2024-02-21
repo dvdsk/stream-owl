@@ -115,17 +115,15 @@ impl StreamConfig {
         crate::store::Error,
     > {
         let stream_size = Size::default();
-        let range_callback = callbacks.range.unwrap(); // TODO fix this unwrap (move into
-                                                       // StreamConfig)
         let (store_reader, store_writer) = match self.storage {
             StorageChoice::Disk(path) => {
-                store::new_disk_backed(path, stream_size.clone(), range_callback).await?
+                store::new_disk_backed(path, stream_size.clone(), callbacks.range).await?
             }
             StorageChoice::MemLimited(limit) => {
-                store::new_limited_mem_backed(limit, stream_size.clone(), range_callback)?
+                store::new_limited_mem_backed(limit, stream_size.clone(), callbacks.range)?
             }
             StorageChoice::MemUnlimited => {
-                store::new_unlimited_mem_backed(stream_size.clone(), range_callback)
+                store::new_unlimited_mem_backed(stream_size.clone(), callbacks.range)
             }
         };
 
@@ -148,7 +146,7 @@ impl StreamConfig {
         };
 
         let retry = if self.retry_disabled {
-            crate::retry::Decider::disabled()
+            crate::retry::Decider::disabled(callbacks.retry_log)
         } else {
             crate::retry::Decider::with_limits(
                 self.max_retries,
@@ -157,12 +155,17 @@ impl StreamConfig {
             )
         };
 
-        let target = StreamTarget::new(store_writer, 0, self.chunk_size, WriterToken::first());
+        let target = StreamTarget::new(
+            store_writer,
+            0,
+            self.chunk_size,
+            WriterToken::first(),
+            callbacks.bandwidth,
+        );
 
         let stream_task = crate::stream::task::restarting_on_seek(
             url,
             target,
-            callbacks.bandwidth,
             seek_rx,
             self.restriction,
             bandwidth_lim,

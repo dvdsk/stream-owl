@@ -47,5 +47,22 @@ macro_rules! callback {
 }
 
 callback!(RangeCallback, RangeUpdate);
-callback!(LogCallback, RangeUpdate);
-callback!(BandwidthCallback, RangeUpdate);
+callback!(LogCallback, std::sync::Arc<http_client::Error>);
+callback!(BandwidthCallback, usize);
+
+#[derive(Debug, Clone)]
+pub(crate) struct Placeholder;
+
+macro_rules! placeholder {
+    ($trait:ident, $arg:ty) => {
+        impl $trait for Placeholder {
+            fn perform(&mut self, val: $arg) {
+                tracing::trace!("callback is none")
+            }
+        }
+    };
+}
+
+placeholder!(RangeCallback, crate::RangeUpdate);
+placeholder!(LogCallback, std::sync::Arc<crate::http_client::Error>);
+placeholder!(BandwidthCallback, usize);

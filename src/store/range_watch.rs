@@ -93,7 +93,7 @@ impl Receiver {
 }
 
 impl<R: RangeCallback> Sender<R> {
-    pub(super) fn send(&self, update: RangeUpdate) {
+    pub(super) fn send(&mut self, update: RangeUpdate) {
         match &update {
             RangeUpdate::Replaced { removed: prev, new } => {
                 assert!(!prev.is_empty() && !new.is_empty())
@@ -111,7 +111,7 @@ impl<R: RangeCallback> Sender<R> {
     }
 
     #[instrument(level = "debug", skip(self))]
-    pub(super) fn send_diff(&self, mut prev: RangeSet<u64>, new: RangeSet<u64>) {
+    pub(super) fn send_diff(&mut self, mut prev: RangeSet<u64>, new: RangeSet<u64>) {
         tracing::trace!("sending range change: {prev:?}->{new:?}");
         // new is a subset of prev
         let to_remove = {

@@ -7,7 +7,7 @@ use tokio::sync::mpsc;
 use crate::network::{BandwidthAllowed, Network};
 use crate::retry::{RetryDurLimit, RetryLimit};
 use crate::{
-    BandwidthCallback, LogCallback, Manager, ManagerError, RangeCallback, StreamError, StreamId,
+    BandwidthCallback, LogCallback, Manager, ManagerError, RangeCallback, StreamError, StreamId, Placeholder,
 };
 
 use super::Callbacks;
@@ -25,20 +25,16 @@ pub struct ManagerBuilder<L, B, R> {
     max_retry_dur: RetryDurLimit,
     timeout: Duration,
 
-    #[derivative(Debug(format_with = "crate::util::fmt_non_printable_option"))]
-    retry_log_callback: Option<L>,
-    #[derivative(Debug(format_with = "crate::util::fmt_non_printable_option"))]
-    bandwidth_callback: Option<B>,
-    #[derivative(Debug(format_with = "crate::util::fmt_non_printable_option"))]
-    range_callback: Option<R>,
+    #[derivative(Debug = "ignore")]
+    retry_log_callback: L,
+    #[derivative(Debug = "ignore")]
+    bandwidth_callback: B,
+    #[derivative(Debug = "ignore")]
+    range_callback: R,
 }
 
-impl<L, B, R> Default for ManagerBuilder<L, B, R>
-where
-    L: LogCallback,
-    B: BandwidthCallback,
-    R: RangeCallback,
-{
+
+impl Default for ManagerBuilder<Placeholder, Placeholder, Placeholder> {
     fn default() -> Self {
         Self {
             stream_defaults: StreamConfig::default(),
@@ -48,9 +44,9 @@ where
             max_retries: RetryLimit::default(),
             max_retry_dur: RetryDurLimit::default(),
             timeout: Duration::from_secs(3),
-            retry_log_callback: None,
-            bandwidth_callback: None,
-            range_callback: None,
+            retry_log_callback: Placeholder,
+            bandwidth_callback: Placeholder,
+            range_callback: Placeholder,
         }
     }
 }
@@ -113,22 +109,61 @@ where
 
     /// Perform an callback whenever a retry happens. Useful to log
     /// errors.
-    pub fn with_retry_callback(mut self, callback: L) -> Self {
-        self.retry_log_callback = Some(callback);
-        self
+    pub fn with_retry_callback<NewL: LogCallback>(
+        mut self,
+        callback: NewL,
+    ) -> ManagerBuilder<NewL, B, R> {
+        ManagerBuilder {
+            stream_defaults: self.stream_defaults,
+            restriction: self.restriction,
+            total_bandwidth: self.total_bandwidth,
+            retry_disabled: self.retry_disabled,
+            max_retries: self.max_retries,
+            max_retry_dur: self.max_retry_dur,
+            timeout: self.timeout,
+            retry_log_callback: callback,
+            bandwidth_callback: self.bandwidth_callback,
+            range_callback: self.range_callback,
+        }
     }
 
     /// Perform an callback whenever the bandwidth has an update
-    pub fn with_bandwidth_callback(mut self, callback: B) -> Self {
-        self.bandwidth_callback = Some(callback);
-        self
+    pub fn with_range_callback<NewR: RangeCallback>(
+        mut self,
+        callback: NewR,
+    ) -> ManagerBuilder<L, B, NewR> {
+        ManagerBuilder {
+            stream_defaults: self.stream_defaults,
+            restriction: self.restriction,
+            total_bandwidth: self.total_bandwidth,
+            retry_disabled: self.retry_disabled,
+            max_retries: self.max_retries,
+            max_retry_dur: self.max_retry_dur,
+            timeout: self.timeout,
+            retry_log_callback: self.retry_log_callback,
+            bandwidth_callback: self.bandwidth_callback,
+            range_callback: callback,
+        }
     }
 
     /// Perform an callback whenever the range locally available
     /// has changed
-    pub fn with_range_callback(mut self, callback: R) -> Self {
-        self.range_callback = Some(callback);
-        self
+    pub fn with_bandwidth_callback<NewB: BandwidthCallback>(
+        mut self,
+        callback: NewB,
+    ) -> ManagerBuilder<L, NewB, R> {
+        ManagerBuilder {
+            stream_defaults: self.stream_defaults,
+            restriction: self.restriction,
+            total_bandwidth: self.total_bandwidth,
+            retry_disabled: self.retry_disabled,
+            max_retries: self.max_retries,
+            max_retry_dur: self.max_retry_dur,
+            timeout: self.timeout,
+            retry_log_callback: self.retry_log_callback,
+            bandwidth_callback: callback,
+            range_callback: self.range_callback,
+        }
     }
 
     pub fn build(

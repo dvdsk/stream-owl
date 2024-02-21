@@ -5,6 +5,7 @@ use bytes::Bytes;
 use http_body_util::BodyExt;
 use hyper::body::{Body, Incoming};
 
+use crate::{BandwidthCallback, RangeCallback};
 use crate::target::StreamTarget;
 use super::size::Size;
 use super::{error, FutureTimeout};
@@ -67,9 +68,9 @@ impl Reader {
     }
 
     #[tracing::instrument(level = "trace", skip(target, self))]
-    pub(crate) async fn stream_to_writer<F: crate::RangeCallback>(
+    pub(crate) async fn stream_to_writer<B: BandwidthCallback, R: RangeCallback>(
         &mut self,
-        target: &mut StreamTarget<F>,
+        target: &mut StreamTarget<B, R>,
         timeout: Duration,
     ) -> Result<(), Error> {
         if let Reader::PartialData { range, .. } = self {

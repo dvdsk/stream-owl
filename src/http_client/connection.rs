@@ -16,31 +16,31 @@ use tracing::instrument;
 
 use super::{error, FutureTimeout};
 use super::{error::Error, Cookies};
+use crate::BandwidthCallback;
 use crate::network::{BandwidthLim, Network};
-use crate::stream::{Report, ReportTx};
 
 mod throttle_io;
 use throttle_io::ThrottlableIo;
 
 #[derive(Derivative)]
 #[derivative(Debug)]
-pub(crate) struct BandwidthMonitor {
+pub(crate) struct BandwidthMonitor<B> {
     last_reported_bandwidth: Arc<AtomicUsize>,
     last_update_at: Instant,
     read_since_last_report: usize,
     #[derivative(Debug = "ignore")]
-    report_tx: ReportTx,
+    report: B,
 }
 
-impl BandwidthMonitor {
-    fn new(report_tx: ReportTx, last_reported_bandwidth: Arc<AtomicUsize>) -> BandwidthMonitor {
+impl<B: BandwidthCallback> BandwidthMonitor<B> {
+    fn new(report: B, last_reported_bandwidth: Arc<AtomicUsize>) -> BandwidthMonitor<B> {
         Self {
             // init with something crazy so the
             // first update will trigger a report
             last_reported_bandwidth,
             last_update_at: Instant::now(),
             read_since_last_report: 0,
-            report_tx,
+            report,
         }
     }
 
@@ -69,7 +69,7 @@ impl BandwidthMonitor {
         let curr_bandwidth = self.read_since_last_report * 1000 / (elapsed.as_millis() as usize);
         if self.last_reported_bandwidth().abs_diff(curr_bandwidth) > margin {
             let _ignore_no_space_left_error =
-                self.report_tx.send(Report::Bandwidth(curr_bandwidth));
+                self.report.perform(curr_bandwidth);
             self.set_last_reported_bandwidth(curr_bandwidth);
             self.last_update_at = now;
             self.read_since_last_report = 0;
@@ -86,15 +86,15 @@ pub(crate) struct Connection {
 
 pub(crate) type HyperResponse = hyper::Response<Incoming>;
 impl Connection {
-    pub(crate) async fn new(
+    pub(crate) async fn new<B: BandwidthCallback>(
         url: &hyper::Uri,
         restriction: &Option<Network>,
         bandwidth_lim: &BandwidthLim,
         bandwidth: Arc<AtomicUsize>,
-        report_tx: ReportTx,
+        bandwidth_callback: B,
         timeout: Duration,
     ) -> Result<Self, Error> {
-        let bandwidth_monitor = BandwidthMonitor::new(report_tx, bandwidth);
+        let bandwidth_monitor = BandwidthMonitor::new(bandwidth_callback, bandwidth);
         let tcp = new_tcp_stream(&url, &restriction).await?;
         let io = ThrottlableIo::new(tcp, bandwidth_lim, bandwidth_monitor)
             .map_err(Error::SocketConfig)?;

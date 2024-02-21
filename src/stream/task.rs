@@ -9,6 +9,9 @@ use crate::network::Network;
 use crate::retry;
 use crate::store::WriterToken;
 use crate::target::StreamTarget;
+use crate::BandwidthCallback;
+use crate::LogCallback;
+use crate::RangeCallback;
 
 use futures::FutureExt;
 use tokio::sync::mpsc;
@@ -32,22 +35,20 @@ pub(crate) enum StreamDone {
 pub struct StreamCanceld;
 
 #[instrument(ret, err, skip_all)]
-pub(crate) async fn restarting_on_seek<F: crate::RangeCallback>(
+pub(crate) async fn restarting_on_seek<L: LogCallback, B: BandwidthCallback, R: RangeCallback>(
     url: http::Uri,
-    mut target: StreamTarget<F>,
-    report_tx: ReportTx,
+    mut target: StreamTarget<B, R>,
     mut seek_rx: mpsc::Receiver<(u64, WriterToken)>,
     restriction: Option<Network>,
     bandwidth_lim: BandwidthLim,
     stream_size: Size,
-    mut retry: crate::retry::Decider,
+    mut retry: crate::retry::Decider<L>,
     timeout: Duration,
 ) -> Result<StreamCanceld, Error> {
     loop {
         if let StreamDone::Canceld = new(
             &url,
             &mut target,
-            &report_tx,
             &mut seek_rx,
             &restriction,
             &bandwidth_lim,
@@ -70,15 +71,14 @@ pub(crate) async fn restarting_on_seek<F: crate::RangeCallback>(
 }
 
 #[instrument(ret, err, skip_all)]
-pub(crate) async fn new<F: crate::RangeCallback>(
+pub(crate) async fn new<L: LogCallback, B: BandwidthCallback, R: RangeCallback>(
     url: &http::Uri,
-    target: &mut StreamTarget<F>,
-    report_tx: &ReportTx,
+    target: &mut StreamTarget<B, R>,
     seek_rx: &mut mpsc::Receiver<(u64, WriterToken)>,
     restriction: &Option<Network>,
     bandwidth_lim: &BandwidthLim,
     stream_size: &Size,
-    retry: &mut retry::Decider,
+    retry: &mut retry::Decider<L>,
     timeout: Duration,
 ) -> Result<StreamDone, Error> {
     let mut client = loop {
@@ -89,7 +89,6 @@ pub(crate) async fn new<F: crate::RangeCallback>(
             bandwidth_lim.clone(),
             stream_size.clone(),
             target,
-            report_tx.clone(),
             retry,
             timeout,
         )
@@ -108,15 +107,7 @@ pub(crate) async fn new<F: crate::RangeCallback>(
     loop {
         client = match client {
             StreamingClient::RangesSupported(client) => {
-                let res = stream_ranges(
-                    client,
-                    target,
-                    &report_tx,
-                    seek_rx,
-                    retry,
-                    timeout,
-                )
-                .await;
+                let res = stream_ranges(client, target, seek_rx, retry, timeout).await;
                 match res {
                     RangeRes::Done => return Ok(StreamDone::DownloadedAll),
                     RangeRes::Canceld => return Ok(StreamDone::Canceld),
@@ -130,7 +121,6 @@ pub(crate) async fn new<F: crate::RangeCallback>(
                     &stream_size,
                     seek_rx,
                     target,
-                    &report_tx,
                     retry,
                     timeout,
                 )
@@ -151,13 +141,12 @@ enum AllRes {
     StreamDone(StreamDone),
 }
 
-async fn stream_all<F: crate::RangeCallback>(
+async fn stream_all<L: LogCallback, B: BandwidthCallback, R: RangeCallback>(
     client_without_range: RangeRefused,
     stream_size: &Size,
     seek_rx: &mut mpsc::Receiver<(u64, WriterToken)>,
-    target: &mut StreamTarget<F>,
-    report_tx: &ReportTx,
-    retry: &mut retry::Decider,
+    target: &mut StreamTarget<B, R>,
+    retry: &mut retry::Decider<L>,
     timeout: Duration,
 ) -> AllRes {
     let builder = client_without_range.builder();
@@ -190,7 +179,7 @@ async fn stream_all<F: crate::RangeCallback>(
     // get range support so any seek would translate to starting the stream
     // again. Which is wat we are doing here.
     let client = loop {
-        let err = match builder.clone().connect(target, &report_tx, timeout).await {
+        let err = match builder.clone().connect(target, timeout).await {
             Ok(client) => break client,
             Err(err) => err,
         };
@@ -210,13 +199,12 @@ enum RangeRes {
     RefuseRange(RangeRefused),
 }
 
-#[instrument(level = "debug", skip(client, target, seek_rx, report_tx), ret)]
-async fn stream_ranges<F: crate::RangeCallback>(
+#[instrument(level = "debug", skip(client, target, seek_rx), ret)]
+async fn stream_ranges<L: LogCallback, B: BandwidthCallback, R: RangeCallback>(
     mut client: RangeSupported,
-    target: &mut StreamTarget<F>,
-    report_tx: &ReportTx,
+    target: &mut StreamTarget<B, R>,
     seek_rx: &mut mpsc::Receiver<(u64, WriterToken)>,
-    retry: &mut retry::Decider,
+    retry: &mut retry::Decider<L>,
     timeout: Duration,
 ) -> RangeRes {
     loop {
@@ -258,7 +246,7 @@ async fn stream_ranges<F: crate::RangeCallback>(
             let get_seek = seek_rx.recv().map(Res4::Seek);
             let get_client_at_new_pos = client_builder
                 .clone()
-                .connect(target, report_tx, timeout)
+                .connect(target, timeout)
                 .map(Into::into);
 
             match (get_client_at_new_pos, get_seek).race().await {
@@ -276,9 +264,9 @@ async fn stream_ranges<F: crate::RangeCallback>(
 }
 
 #[instrument(level = "debug", skip_all)]
-async fn process_one_stream<F: crate::RangeCallback>(
+async fn process_one_stream<B: BandwidthCallback, R: RangeCallback>(
     client: RangeSupported,
-    target: &mut StreamTarget<F>,
+    target: &mut StreamTarget<B, R>,
     timeout: Duration,
 ) -> Result<Option<StreamingClient>, Error> {
     let mut reader = client.into_reader();

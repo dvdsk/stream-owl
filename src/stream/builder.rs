@@ -11,7 +11,7 @@ use crate::http_client::Size;
 use crate::network::{BandwidthAllowed, BandwidthLim, BandwidthLimit, Network};
 use crate::store::{self, StorageChoice, WriterToken};
 use crate::target::{ChunkSizeBuilder, StreamTarget};
-use crate::{util, BandwidthCallback, LogCallback, RangeCallback, StreamCanceld};
+use crate::{util, BandwidthCallback, LogCallback, Placeholder, RangeCallback, StreamCanceld};
 
 use super::{task, Error, Handle};
 use crate::retry::{RetryDurLimit, RetryLimit};
@@ -32,16 +32,16 @@ pub struct StreamBuilder<const STORAGE_SET: bool, L, B, R> {
     pub(crate) max_retry_dur: RetryDurLimit,
     pub(crate) timeout: Duration,
 
-    #[derivative(Debug(format_with = "crate::util::fmt_non_printable_option"))]
-    pub(crate) retry_log_callback: Option<L>,
-    #[derivative(Debug(format_with = "crate::util::fmt_non_printable_option"))]
-    pub(crate) bandwidth_callback: Option<B>,
-    #[derivative(Debug(format_with = "crate::util::fmt_non_printable_option"))]
-    pub(crate) range_callback: Option<R>,
+    #[derivative(Debug = "ignore")]
+    pub(crate) retry_log_callback: L,
+    #[derivative(Debug = "ignore")]
+    pub(crate) bandwidth_callback: B,
+    #[derivative(Debug = "ignore")]
+    pub(crate) range_callback: R,
 }
 
-impl<L: LogCallback, B: BandwidthCallback, R> StreamBuilder<false, L, B, R> {
-    pub fn new(url: http::Uri) -> StreamBuilder<false, L, B, R> {
+impl StreamBuilder<false, Placeholder, Placeholder, Placeholder> {
+    pub fn new(url: http::Uri) -> StreamBuilder<false, Placeholder, Placeholder, Placeholder> {
         StreamBuilder {
             url,
             storage: None,
@@ -55,9 +55,9 @@ impl<L: LogCallback, B: BandwidthCallback, R> StreamBuilder<false, L, B, R> {
             max_retry_dur: RetryDurLimit::default(),
             timeout: Duration::from_secs(2),
 
-            bandwidth_callback: None,
-            retry_log_callback: None,
-            range_callback: None,
+            bandwidth_callback: Placeholder,
+            retry_log_callback: Placeholder,
+            range_callback: Placeholder,
         }
     }
 }
@@ -181,9 +181,26 @@ impl<const STORAGE_SET: bool, L, B, R> StreamBuilder<STORAGE_SET, L, B, R> {
 
     /// Perform an callback whenever a retry happens. Useful to log
     /// errors.
-    pub fn with_retry_callback(mut self, logger: L) -> Self {
-        self.retry_log_callback = Some(logger);
-        self
+    pub fn with_retry_callback<NewL>(
+        mut self,
+        logger: NewL,
+    ) -> StreamBuilder<STORAGE_SET, NewL, B, R> {
+        StreamBuilder {
+            url: self.url,
+            storage: self.storage,
+            initial_prefetch: self.initial_prefetch,
+            chunk_size: self.chunk_size,
+            restriction: self.restriction,
+            start_paused: self.start_paused,
+            bandwidth: self.bandwidth,
+            retry_disabled: self.retry_disabled,
+            max_retries: self.max_retries,
+            max_retry_dur: self.max_retry_dur,
+            timeout: self.timeout,
+            retry_log_callback: logger,
+            bandwidth_callback: self.bandwidth_callback,
+            range_callback: self.range_callback,
+        }
     }
 
     /// How long an operation may hang before we abort it
@@ -208,16 +225,15 @@ impl<L: LogCallback, B: BandwidthCallback, R: RangeCallback> StreamBuilder<true,
     > {
         let stream_size = Size::default();
 
-        let range_callback = |_| (); // TODO actually use the closure set in the builder
         let (store_reader, store_writer) = match self.storage.expect("must chose storage option") {
             StorageChoice::Disk(path) => {
-                store::new_disk_backed(path, stream_size.clone(), range_callback).await?
+                store::new_disk_backed(path, stream_size.clone(), self.range_callback).await?
             }
             StorageChoice::MemLimited(limit) => {
-                store::new_limited_mem_backed(limit, stream_size.clone(), range_callback)?
+                store::new_limited_mem_backed(limit, stream_size.clone(), self.range_callback)?
             }
             StorageChoice::MemUnlimited => {
-                store::new_unlimited_mem_backed(stream_size.clone(), range_callback)
+                store::new_unlimited_mem_backed(stream_size.clone(), self.range_callback)
             }
         };
 
@@ -229,28 +245,33 @@ impl<L: LogCallback, B: BandwidthCallback, R: RangeCallback> StreamBuilder<true,
             prefetch: self.initial_prefetch,
             seek_tx,
             is_paused: self.start_paused,
-            store_writer: todo!(), //store_writer.clone(),
+            store_writer: store_writer.clone(),
             store_reader: Arc::new(Mutex::new(store_reader)),
             pause_tx,
             bandwidth_lim_tx,
         };
 
         let retry = if self.retry_disabled {
-            crate::retry::Decider::disabled()
+            crate::retry::Decider::disabled(self.retry_log_callback)
         } else {
             crate::retry::Decider::with_limits(
                 self.max_retries,
                 self.max_retry_dur,
-                report_tx.clone(),
+                self.retry_log_callback,
             )
         };
 
-        let target = StreamTarget::new(store_writer, 0, self.chunk_size, WriterToken::first());
+        let target = StreamTarget::new(
+            store_writer,
+            0,
+            self.chunk_size,
+            WriterToken::first(),
+            self.bandwidth_callback,
+        );
 
         let stream_task = task::restarting_on_seek(
             self.url,
             target,
-            report_tx,
             seek_rx,
             self.restriction,
             bandwidth_lim,

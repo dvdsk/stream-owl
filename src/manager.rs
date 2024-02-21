@@ -12,6 +12,7 @@ pub mod stream;
 mod task;
 pub(crate) use task::Command;
 
+use crate::Placeholder;
 use self::builder::ManagerBuilder;
 use self::stream::StreamConfig;
 
@@ -22,11 +23,11 @@ pub struct Error;
 #[derivative(Debug)]
 pub(crate) struct Callbacks<L: LogCallback, B: BandwidthCallback, R: RangeCallback> {
     #[derivative(Debug = "ignore")]
-    retry_log: Option<L>,
+    retry_log: L,
     #[derivative(Debug = "ignore")]
-    bandwidth: Option<B>,
+    bandwidth: B,
     #[derivative(Debug = "ignore")]
-    range: Option<R>,
+    range: R,
 }
 
 #[derive(Derivative)]
@@ -45,7 +46,7 @@ pub struct Manager<R: RangeCallback> {
 }
 
 impl<R: RangeCallback> Manager<R> {
-    pub fn builder<L: LogCallback, B: BandwidthCallback>() -> ManagerBuilder<L, B, R> {
+    pub fn builder() -> ManagerBuilder<Placeholder, Placeholder, Placeholder> {
         ManagerBuilder::default()
     }
 
