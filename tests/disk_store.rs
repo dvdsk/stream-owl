@@ -15,7 +15,7 @@ fn after_seeking_forward_download_still_completes() {
     let test_dl_path = stream_owl::testing::gen_file_path();
     let configure = {
         let path = test_dl_path.clone();
-        move |b: StreamBuilder<false>| b.with_prefetch(0).to_disk(path).start_paused(true)
+        move |b: StreamBuilder<false, _, _, _>| b.with_prefetch(0).to_disk(path).start_paused(true)
     };
 
     let conn_controls = ConnControls::new(Vec::new());
@@ -53,7 +53,7 @@ fn resumes() {
     let test_dl_path = stream_owl::testing::gen_file_path();
     let configure = {
         let path = test_dl_path.clone();
-        move |b: StreamBuilder<false>| {
+        move |b: StreamBuilder<false, _, _, _>| {
             b.with_prefetch(0)
                 .to_disk(path)
                 .start_paused(true)

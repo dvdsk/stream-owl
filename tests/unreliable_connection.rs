@@ -16,7 +16,7 @@ use tracing::info;
 fn conn_drops_spaced_out() {
     let (retry_tx, retry_rx) = mpsc::channel();
     let configure = {
-        move |b: StreamBuilder<false>| {
+        move |b: StreamBuilder<false, _, _, _>| {
             b.with_prefetch(0)
                 .to_unlimited_mem()
                 .with_max_retries(3)
@@ -97,7 +97,7 @@ async fn server_hangs_loop(listener: tokio::net::TcpListener) -> Result<(), std:
 #[test]
 fn server_hangs() {
     let configure = {
-        move |b: StreamBuilder<false>| {
+        move |b: StreamBuilder<false, _,_,_>| {
             b.with_prefetch(0)
                 .to_unlimited_mem()
                 .with_max_retries(2)
@@ -166,7 +166,7 @@ async fn http200only_loop(listener: tokio::net::TcpListener) -> Result<(), std::
 #[test]
 fn body_is_empty() {
     let configure = {
-        move |b: StreamBuilder<false>| {
+        move |b: StreamBuilder<false, _, _, _>| {
             b.with_prefetch(0)
                 .to_unlimited_mem()
                 .with_max_retries(2)

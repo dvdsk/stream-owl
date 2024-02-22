@@ -10,7 +10,7 @@ use tracing::info;
 #[test]
 fn bw_stream_not_faster_then_limit() {
     let configure = {
-        move |b: StreamBuilder<false>| {
+        move |b: StreamBuilder<false, _, _, _>| {
             b.with_prefetch(0)
                 .to_unlimited_mem()
                 .with_fixed_chunk_size(NonZeroUsize::new(100_000).unwrap())
@@ -46,7 +46,7 @@ fn bw_stream_not_faster_then_limit() {
 
 fn test_run(spd_limit: u32) -> Duration {
     let configure = {
-        move |b: StreamBuilder<false>| {
+        move |b: StreamBuilder<false, _, _, _>| {
             b.with_prefetch(0)
                 .to_unlimited_mem()
                 .with_fixed_chunk_size(NonZeroUsize::new(100_000).unwrap())

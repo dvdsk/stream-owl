@@ -11,8 +11,8 @@ use tokio::task::{JoinError, JoinHandle};
 use tracing_subscriber::fmt::time::uptime;
 
 use crate::{
-    BandwidthCallback, LogCallback, Placeholder, RangeCallback, StreamBuilder, StreamCanceld,
-    StreamError, StreamHandle,
+    BandwidthCallback, LogCallback, RangeCallback, StreamBuilder, StreamCanceld,
+    StreamError, StreamHandle, UnconfiguredSB,
 };
 
 mod pausable_server;
@@ -49,11 +49,7 @@ pub fn test_data(bytes: u32) -> Vec<u8> {
 pub fn setup_reader_test<L, B, R>(
     test_done: &Arc<Notify>,
     test_file_size: u32,
-    configure: impl FnOnce(
-            StreamBuilder<false, Placeholder, Placeholder, Placeholder>,
-        ) -> StreamBuilder<true, L, B, R>
-        + Send
-        + 'static,
+    configure: impl FnOnce(UnconfiguredSB) -> StreamBuilder<true, L, B, R> + Send + 'static,
     server: impl FnOnce(u64) -> (http::Uri, JoinHandle<Result<(), std::io::Error>>) + Send + 'static,
 ) -> (thread::JoinHandle<TestEnded>, StreamHandle<R>)
 where

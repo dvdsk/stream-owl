@@ -10,8 +10,11 @@ use tokio::sync::Notify;
 
 #[test]
 fn reader_only_makes_progress_after_unpause() {
-    let configure =
-        { move |b: StreamBuilder<false>| b.with_prefetch(0).to_unlimited_mem().start_paused(true) };
+    let configure = {
+        move |b: StreamBuilder<false, _, _, _>| {
+            b.with_prefetch(0).to_unlimited_mem().start_paused(true)
+        }
+    };
 
     let test_file_size = 1_000u32;
     let test_done = Arc::new(Notify::new());
@@ -48,7 +51,8 @@ fn reader_only_makes_progress_after_unpause() {
 
 #[test]
 fn pausing_after_stream_work_is_done() {
-    let configure = { move |b: StreamBuilder<false>| b.with_prefetch(0).to_unlimited_mem() };
+    let configure =
+        { move |b: StreamBuilder<false, _, _, _>| b.with_prefetch(0).to_unlimited_mem() };
 
     let test_file_size = 1_000u32;
     let test_done = Arc::new(Notify::new());

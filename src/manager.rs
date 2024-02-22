@@ -5,23 +5,26 @@ use tokio::sync::{mpsc, oneshot};
 
 use crate::network::{BandwidthAllowed, BandwidthLimit, Network};
 use crate::retry::{RetryDurLimit, RetryLimit};
-use crate::{BandwidthCallback, LogCallback, RangeCallback};
+use crate::{
+    BandwidthCallback, IdBandwidthCallback, IdLogCallback, IdRangeCallback, LogCallback,
+    RangeCallback, RangeUpdate,
+};
 
 mod builder;
 pub mod stream;
 mod task;
 pub(crate) use task::Command;
 
-use crate::Placeholder;
 use self::builder::ManagerBuilder;
-use self::stream::StreamConfig;
+use self::stream::{GenericLessManagedHandle, StreamConfig};
+use crate::Placeholder;
 
 #[derive(Debug)]
 pub struct Error;
 
 #[derive(Derivative, Clone)]
 #[derivative(Debug)]
-pub(crate) struct Callbacks<L: LogCallback, B: BandwidthCallback, R: RangeCallback> {
+pub(crate) struct Callbacks<L: IdLogCallback, B: IdBandwidthCallback, R: IdRangeCallback> {
     #[derivative(Debug = "ignore")]
     retry_log: L,
     #[derivative(Debug = "ignore")]
@@ -30,10 +33,73 @@ pub(crate) struct Callbacks<L: LogCallback, B: BandwidthCallback, R: RangeCallba
     range: R,
 }
 
+#[derive(Derivative, Clone)]
+#[derivative(Debug)]
+pub(crate) struct WrappedCallbacks<L: LogCallback, B: BandwidthCallback, R: RangeCallback> {
+    #[derivative(Debug = "ignore")]
+    retry_log: L,
+    #[derivative(Debug = "ignore")]
+    bandwidth: B,
+    #[derivative(Debug = "ignore")]
+    range: R,
+}
+
+#[derive(Clone)]
+struct CallWithId<F: Clone> {
+    callback: F,
+    id: crate::StreamId,
+}
+
+macro_rules! id_callback {
+    ($trait_with_id:ident, $trait_without_id:ident, $arg:ty) => {
+        impl<F: $trait_with_id> $trait_without_id for CallWithId<F> {
+            fn perform(&mut self, update: $arg) {
+                self.callback.perform(self.id, update)
+            }
+        }
+    };
+}
+
+id_callback! {IdRangeCallback, RangeCallback, RangeUpdate}
+id_callback! {IdBandwidthCallback, BandwidthCallback, usize}
+id_callback! {IdLogCallback, LogCallback, std::sync::Arc<crate::http_client::Error>}
+
+impl<L, B, R> Callbacks<L, B, R>
+where
+    L: IdLogCallback,
+    B: IdBandwidthCallback,
+    R: IdRangeCallback,
+{
+    fn wrap(
+        &self,
+        id: crate::StreamId,
+    ) -> WrappedCallbacks<CallWithId<L>, CallWithId<B>, CallWithId<R>> {
+        let Callbacks {
+            retry_log,
+            bandwidth,
+            range,
+        } = self.clone();
+        WrappedCallbacks {
+            retry_log: CallWithId {
+                callback: retry_log,
+                id,
+            },
+            bandwidth: CallWithId {
+                callback: bandwidth,
+                id,
+            },
+            range: CallWithId {
+                callback: range,
+                id,
+            },
+        }
+    }
+}
+
 #[derive(Derivative)]
 #[derivative(Debug)]
-pub struct Manager<R: RangeCallback> {
-    cmd_tx: mpsc::Sender<task::Command<R>>,
+pub struct Manager {
+    cmd_tx: mpsc::Sender<task::Command>,
 
     stream_defaults: StreamConfig,
     restriction: Option<Network>,
@@ -45,13 +111,13 @@ pub struct Manager<R: RangeCallback> {
     timeout: Duration,
 }
 
-impl<R: RangeCallback> Manager<R> {
+impl Manager {
     pub fn builder() -> ManagerBuilder<Placeholder, Placeholder, Placeholder> {
         ManagerBuilder::default()
     }
 
     /// panics if called from an async context
-    pub fn add(&mut self, url: http::Uri) -> stream::ManagedHandle<R> {
+    pub fn add(&mut self, url: http::Uri) -> stream::GenericLessManagedHandle {
         let config = self.stream_defaults.clone();
         let (tx, rx) = oneshot::channel();
         self.cmd_tx
@@ -69,7 +135,7 @@ impl<R: RangeCallback> Manager<R> {
         &mut self,
         url: http::Uri,
         configurator: impl FnOnce(StreamConfig) -> StreamConfig,
-    ) -> stream::ManagedHandle<R> {
+    ) -> GenericLessManagedHandle {
         let config = self.stream_defaults.clone();
         let config = (configurator)(config);
         let (tx, rx) = oneshot::channel();

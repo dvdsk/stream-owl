@@ -10,7 +10,7 @@ use tokio::sync::Notify;
 #[test]
 fn migrate_to_disk() {
     let test_dl_path = stream_owl::testing::gen_file_path();
-    let configure = |b: StreamBuilder<false>| {
+    let configure = |b: StreamBuilder<false, _, _, _>| {
         b.with_prefetch(0)
             .to_unlimited_mem()
             .with_fixed_chunk_size(NonZeroUsize::new(1000).unwrap())
@@ -94,7 +94,8 @@ fn assert_eq_arrays(downloaded: &[u8], correct: &[u8]) {
 
 #[test]
 fn unlimited_migrated_to_lim_store_streams_again() {
-    let configure = { move |b: StreamBuilder<false>| b.with_prefetch(0).to_unlimited_mem() };
+    let configure =
+        { move |b: StreamBuilder<false, _, _, _>| b.with_prefetch(0).to_unlimited_mem() };
 
     let conn_controls = ConnControls::new(Vec::new());
     let server_controls = ServerControls::new();
@@ -134,7 +135,7 @@ fn file_is_deleted_when_migrating_from_disk_store() {
     let test_dl_path = stream_owl::testing::gen_file_path();
     let configure = {
         let path = test_dl_path.clone();
-        move |b: StreamBuilder<false>| b.with_prefetch(0).to_disk(path)
+        move |b: StreamBuilder<false, _, _, _>| b.with_prefetch(0).to_disk(path)
     };
 
     let conn_controls = ConnControls::new(Vec::new());

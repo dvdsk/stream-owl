@@ -9,11 +9,9 @@ use tokio::task::{AbortHandle, JoinSet};
 use tracing::{info, trace};
 
 use crate::stream::StreamEnded;
-use crate::{
-    BandwidthCallback, LogCallback, ManagedStreamHandle, RangeCallback, StreamError, StreamId,
-};
+use crate::{IdBandwidthCallback, IdLogCallback, IdRangeCallback, StreamError, StreamId};
 
-use super::stream::StreamConfig;
+use super::stream::{GenericLessManagedHandle, StreamConfig};
 use super::Callbacks;
 
 mod bandwidth;
@@ -22,11 +20,11 @@ use race_results::Res;
 
 #[derive(Derivative)]
 #[derivative(Debug)]
-pub(crate) enum Command<R: RangeCallback> {
+pub(crate) enum Command {
     AddStream {
         #[derivative(Debug = "ignore")]
         /* TODO: get rid of generics <21-02-24, dvdsk noreply@davidsk.dev> */
-        handle_tx: oneshot::Sender<ManagedStreamHandle<R>>,
+        handle_tx: oneshot::Sender<GenericLessManagedHandle>,
         config: StreamConfig,
         url: http::Uri,
     },
@@ -38,27 +36,27 @@ async fn wait_forever() -> StreamEnded {
     unreachable!()
 }
 
-struct Tomato<L: LogCallback, B: BandwidthCallback, R: RangeCallback> {
+struct Tomato<L: IdLogCallback, B: IdBandwidthCallback, R: IdRangeCallback> {
     bandwidth_ctrl: bandwidth::Controller,
 
-    cmd_tx: Sender<Command<R>>,
+    cmd_tx: Sender<Command>,
     err_tx: UnboundedSender<(StreamId, StreamError)>,
     streams: JoinSet<StreamEnded>,
     abort_handles: HashMap<StreamId, AbortHandle>,
     callbacks: Callbacks<L, B, R>,
 }
 
-impl<L: LogCallback, B: BandwidthCallback, R: RangeCallback> Tomato<L, B, R> {
+impl<L: IdLogCallback, B: IdBandwidthCallback, R: IdRangeCallback> Tomato<L, B, R> {
     async fn add_stream(
         &mut self,
-        handle_tx: oneshot::Sender<ManagedStreamHandle<R>>,
+        handle_tx: oneshot::Sender<GenericLessManagedHandle>,
         config: StreamConfig,
         url: http::Uri,
     ) -> Result<(), crate::store::Error> {
+        let id = StreamId::new();
         let cmd_tx = self.cmd_tx.clone();
-        let callbacks = self.callbacks.clone();
+        let callbacks = self.callbacks.wrap(id);
         let (handle, stream_task) = async move {
-            let id = StreamId::new();
             let (handle, stream_task) = config.start(url, cmd_tx, callbacks).await?;
             let stream_task = stream_task.map(move |res| StreamEnded { res, id });
             Result::<_, crate::store::Error>::Ok((handle, stream_task))
@@ -67,6 +65,7 @@ impl<L: LogCallback, B: BandwidthCallback, R: RangeCallback> Tomato<L, B, R> {
 
         let abort_handle = self.streams.spawn(stream_task);
         self.abort_handles.insert(handle.id(), abort_handle);
+        let handle = GenericLessManagedHandle::from_generic(handle);
         if let Err(_) = handle_tx.send(handle) {
             trace!("add_stream canceld on user side");
             // dropping the handle here will cancel the streams task
@@ -76,7 +75,7 @@ impl<L: LogCallback, B: BandwidthCallback, R: RangeCallback> Tomato<L, B, R> {
     }
 
     fn new(
-        cmd_tx: Sender<Command<R>>,
+        cmd_tx: Sender<Command>,
         err_tx: UnboundedSender<(StreamId, StreamError)>,
         callbacks: Callbacks<L, B, R>,
     ) -> Self {
@@ -93,9 +92,9 @@ impl<L: LogCallback, B: BandwidthCallback, R: RangeCallback> Tomato<L, B, R> {
     }
 }
 
-pub(super) async fn run<L: LogCallback, B: BandwidthCallback, R: RangeCallback>(
-    cmd_tx: Sender<Command<R>>,
-    mut cmd_rx: Receiver<Command<R>>,
+pub(super) async fn run<L: IdLogCallback, B: IdBandwidthCallback, R: IdRangeCallback>(
+    cmd_tx: Sender<Command>,
+    mut cmd_rx: Receiver<Command>,
     err_tx: UnboundedSender<(StreamId, StreamError)>,
     callbacks: Callbacks<L, B, R>,
 ) -> super::Error {

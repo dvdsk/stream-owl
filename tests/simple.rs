@@ -3,8 +3,12 @@ use std::io::Seek;
 use std::sync::Arc;
 
 use stream_owl::testing;
+use stream_owl::BandwidthCallback;
+use stream_owl::LogCallback;
+use stream_owl::RangeCallback;
 use stream_owl::Reader;
 use stream_owl::StreamBuilder;
+use stream_owl::UnconfiguredSB;
 use tokio::sync::Notify;
 use tracing::info;
 use tracing::instrument;
@@ -15,7 +19,7 @@ mod xlimited_memory {
 
     #[test]
     fn seek_from_all_sides_works() {
-        let configure = |b: StreamBuilder<false>| b.with_prefetch(0).to_limited_mem(1000);
+        let configure = |b: StreamBuilder<false, _, _, _>| b.with_prefetch(0).to_limited_mem(1000);
         seek_test(configure);
     }
 }
@@ -26,7 +30,7 @@ mod unlimited_memory {
 
     #[test]
     fn seek_from_all_sides_works() {
-        let configure = |b: StreamBuilder<false>| b.with_prefetch(0).to_unlimited_mem();
+        let configure = |b: StreamBuilder<false, _, _, _>| b.with_prefetch(0).to_unlimited_mem();
         seek_test(configure);
     }
 }
@@ -37,7 +41,7 @@ mod disk {
 
     #[test]
     fn seek_from_all_sides_works() {
-        let configure = |b: StreamBuilder<false>| {
+        let configure = |b: StreamBuilder<false, _, _, _>| {
             let path = stream_owl::testing::gen_file_path();
             b.with_prefetch(0).to_disk(path)
         };
@@ -45,7 +49,12 @@ mod disk {
     }
 }
 
-fn seek_test(configure: fn(StreamBuilder<false>) -> StreamBuilder<true>) {
+fn seek_test<L, B, R>(configure: fn(UnconfiguredSB) -> StreamBuilder<true, L, B, R>)
+where
+    L: LogCallback,
+    B: BandwidthCallback,
+    R: RangeCallback,
+{
     let test_file_size = 10_000u32;
     let test_done = Arc::new(Notify::new());
     let (runtime_thread, mut handle) = testing::setup_reader_test(

@@ -181,10 +181,7 @@ impl<const STORAGE_SET: bool, L, B, R> StreamBuilder<STORAGE_SET, L, B, R> {
 
     /// Perform an callback whenever a retry happens. Useful to log
     /// errors.
-    pub fn with_retry_callback<NewL>(
-        mut self,
-        logger: NewL,
-    ) -> StreamBuilder<STORAGE_SET, NewL, B, R> {
+    pub fn with_retry_callback<NewL>(self, logger: NewL) -> StreamBuilder<STORAGE_SET, NewL, B, R> {
         StreamBuilder {
             url: self.url,
             storage: self.storage,

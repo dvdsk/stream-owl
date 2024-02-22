@@ -1,5 +1,4 @@
 use std::future::Future;
-use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
@@ -9,11 +8,8 @@ use tokio::sync::Mutex;
 
 use crate::http_client::Size;
 use crate::manager::Command;
-use crate::network::{BandwidthLim, BandwidthLimit};
-use crate::store::migrate::MigrationError;
+use crate::network::BandwidthLim;
 use crate::store::{self, StorageChoice, WriterToken};
-use crate::stream::blocking;
-use crate::stream::GetReaderError;
 use crate::target::StreamTarget;
 use crate::{
     util, BandwidthCallback, LogCallback, RangeCallback, StreamCanceld, StreamError, StreamHandle,
@@ -22,7 +18,7 @@ use crate::{
 mod config;
 pub use config::StreamConfig;
 
-use super::Callbacks;
+use super::WrappedCallbacks;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Id(usize);
@@ -34,34 +30,50 @@ impl Id {
         Self(id)
     }
 }
-macro_rules! managed_async {
-    ($fn_name:ident $($param:ident: $t:ty),*$(; $returns:ty)?) => {
-        pub async fn $fn_name(&mut self, $($param: $t),*) $(-> $returns)? {
-            self.handle.$fn_name($($param),*).await
-        }
-    };
+// macro_rules! managed_async {
+//     ($fn_name:ident $($param:ident: $t:ty),*$(; $returns:ty)?) => {
+//         pub async fn $fn_name(&mut self, $($param: $t),*) $(-> $returns)? {
+//             self.handle.$fn_name($($param),*).await
+//         }
+//     };
+// }
+//
+// macro_rules! managed {
+//     ($fn_name:ident $($param:ident: $t:ty),*$(; $returns:ty)?) => {
+//         pub fn $fn_name(&mut self, $($param: $t),*) $(-> $returns)? {
+//             self.handle.$fn_name($($param),*)
+//         }
+//     };
+// }
+
+pub(crate) trait ManagedHandleTrait {}
+impl<F: RangeCallback> ManagedHandleTrait for ManagedHandle<F> {}
+
+pub struct GenericLessManagedHandle {
+    inner: Box<dyn ManagedHandleTrait>,
 }
 
-macro_rules! managed {
-    ($fn_name:ident $($param:ident: $t:ty),*$(; $returns:ty)?) => {
-        pub fn $fn_name(&mut self, $($param: $t),*) $(-> $returns)? {
-            self.handle.$fn_name($($param),*)
+impl GenericLessManagedHandle {
+    pub(crate) fn from_generic<F: RangeCallback>(generic: ManagedHandle<F>) -> Self {
+        Self {
+            inner: Box::new(generic) as Box<dyn ManagedHandleTrait>,
         }
-    };
+    }
 }
+
 
 #[derive(Derivative)]
 #[derivative(Debug)]
-pub struct ManagedHandle<F: crate::RangeCallback> {
+pub struct ManagedHandle<F: RangeCallback> {
     /// allows the handle to send a message
     /// to the manager to drop the streams future
     /// or increase/decrease priority.
     #[derivative(Debug = "ignore")]
-    pub(crate) cmd_manager: Sender<Command<F>>,
+    pub(crate) cmd_manager: Sender<Command>,
     pub(crate) handle: StreamHandle<F>,
 }
 
-impl<F: crate::RangeCallback> Drop for ManagedHandle<F> {
+impl<F: RangeCallback> Drop for ManagedHandle<F> {
     fn drop(&mut self) {
         self.cmd_manager
             .try_send(Command::CancelStream(self.id()))
@@ -77,36 +89,39 @@ impl<F: crate::RangeCallback> ManagedHandle<F> {
     pub fn id(&self) -> Id {
         todo!()
     }
-
-    managed_async! {pause}
-    managed_async! {unpause}
-    managed_async! {limit_bandwidth bandwidth: BandwidthLimit}
-    managed_async! {remove_bandwidth_limit}
-    managed_async! {migrate_to_limited_mem_backend max_cap: usize; Result<(), MigrationError>}
-    managed_async! {migrate_to_unlimited_mem_backend ; Result<(), MigrationError>}
-    managed_async! {migrate_to_disk_backend path: PathBuf; Result<(), MigrationError>}
-    managed_async! {flush ; Result<(), StreamError>}
-
-    managed! {try_get_reader; Result<crate::reader::Reader, GetReaderError>}
 }
-impl<F: crate::RangeCallback> ManagedHandle<F> {
-    blocking! {pause - pause_blocking}
-    blocking! {unpause - unpause_blocking}
-    blocking! {limit_bandwidth - limit_bandwidth_blocking bandwidth: BandwidthLimit}
-    blocking! {remove_bandwidth_limit - remove_bandwidth_limit_blocking}
-    blocking! {migrate_to_limited_mem_backend - migrate_to_limited_mem_backend_blocking max_cap: usize; Result<(), MigrationError>}
-    blocking! {migrate_to_unlimited_mem_backend - migrate_to_unlimited_mem_backend_blocking ; Result<(), MigrationError>}
-    blocking! {migrate_to_disk_backend - migrate_to_disk_backend_blocking path: PathBuf; Result<(), MigrationError>}
-    blocking! {flush - flush_blocking; Result<(), StreamError>}
-}
+/* TODO: make this work again <22-02-24> */
+//
+//     managed_async! {pause}
+//     managed_async! {unpause}
+//     managed_async! {limit_bandwidth bandwidth: BandwidthLimit}
+//     managed_async! {remove_bandwidth_limit}
+//     managed_async! {migrate_to_limited_mem_backend max_cap: usize; Result<(), MigrationError>}
+//     managed_async! {migrate_to_unlimited_mem_backend ; Result<(), MigrationError>}
+//     managed_async! {migrate_to_disk_backend path: PathBuf; Result<(), MigrationError>}
+//     managed_async! {flush ; Result<(), StreamError>}
+//
+//     managed! {try_get_reader; Result<crate::reader::Reader, GetReaderError>}
+// }
+//
+// impl<F: crate::IdRangeCallback> ManagedHandle<F> {
+//     blocking! {pause - pause_blocking}
+//     blocking! {unpause - unpause_blocking}
+//     blocking! {limit_bandwidth - limit_bandwidth_blocking bandwidth: BandwidthLimit}
+//     blocking! {remove_bandwidth_limit - remove_bandwidth_limit_blocking}
+//     blocking! {migrate_to_limited_mem_backend - migrate_to_limited_mem_backend_blocking max_cap: usize; Result<(), MigrationError>}
+//     blocking! {migrate_to_unlimited_mem_backend - migrate_to_unlimited_mem_backend_blocking ; Result<(), MigrationError>}
+//     blocking! {migrate_to_disk_backend - migrate_to_disk_backend_blocking path: PathBuf; Result<(), MigrationError>}
+//     blocking! {flush - flush_blocking; Result<(), StreamError>}
+// }
 
 impl StreamConfig {
     #[tracing::instrument]
     pub async fn start<L: LogCallback, B: BandwidthCallback, R: RangeCallback>(
         self,
         url: http::Uri,
-        manager_tx: Sender<Command<R>>,
-        callbacks: Callbacks<L, B, R>,
+        manager_tx: Sender<Command>,
+        callbacks: WrappedCallbacks<L, B, R>,
     ) -> Result<
         (
             ManagedHandle<R>,

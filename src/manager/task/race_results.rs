@@ -1,25 +1,19 @@
 use tokio::task::JoinError;
 
 use crate::stream::StreamEnded;
-use crate::{StreamId, StreamError, RangeCallback};
+use crate::{StreamError, StreamId};
 
 use super::Command;
 
-
-pub(super) enum Res<R: RangeCallback> {
-    StreamComplete {
-        id: StreamId,
-    },
-    StreamError {
-        id: StreamId,
-        error: StreamError,
-    },
-    NewCmd(Command<R>),
+pub(super) enum Res {
+    StreamComplete { id: StreamId },
+    StreamError { id: StreamId, error: StreamError },
+    NewCmd(Command),
     Dropped,
 }
 
-impl<R: RangeCallback> From<Option<Command<R>>> for Res<R> {
-    fn from(value: Option<Command<R>>) -> Self {
+impl From<Option<Command>> for Res {
+    fn from(value: Option<Command>) -> Self {
         match value {
             Some(cmd) => Res::NewCmd(cmd),
             None => Res::Dropped,
@@ -27,7 +21,7 @@ impl<R: RangeCallback> From<Option<Command<R>>> for Res<R> {
     }
 }
 
-impl<R: RangeCallback> From<Option<Result<StreamEnded, JoinError>>> for Res<R> {
+impl From<Option<Result<StreamEnded, JoinError>>> for Res {
     fn from(value: Option<Result<StreamEnded, JoinError>>) -> Self {
         let StreamEnded { id, res } = value
             .expect("streams JoinSet should never be empty")

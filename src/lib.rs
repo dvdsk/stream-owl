@@ -31,38 +31,40 @@ pub use manager::stream::ManagedHandle as ManagedStreamHandle;
 pub use manager::Error as ManagerError;
 pub use manager::Manager;
 
+#[derive(Debug, Clone)]
+pub struct Placeholder;
+
 // doing this instead of type aliases which are unstable
 macro_rules! callback {
-    ($name:ident, $arg:ty) => {
-        trait $name: Send + Clone + 'static {
-            fn perform(&mut self, update: $arg);
+    ($name:ident, $($arg_ident:ident: $arg_ty:ty),+) => {
+        pub trait $name: Send + Clone + 'static {
+            fn perform(&mut self, $($arg_ident: $arg_ty),+);
         }
 
-        impl<C: FnMut($arg) + Send + Clone + 'static> $name for C {
-            fn perform(&mut self, update: $arg) {
-                (self)(update)
+        impl<C: FnMut($($arg_ty),+) + Send + Clone + 'static> $name for C {
+            fn perform(&mut self, $($arg_ident: $arg_ty),+) {
+                (self)($($arg_ident),+)
             }
         }
-    };
-}
 
-callback!(RangeCallback, RangeUpdate);
-callback!(LogCallback, std::sync::Arc<http_client::Error>);
-callback!(BandwidthCallback, usize);
-
-#[derive(Debug, Clone)]
-pub(crate) struct Placeholder;
-
-macro_rules! placeholder {
-    ($trait:ident, $arg:ty) => {
-        impl $trait for Placeholder {
-            fn perform(&mut self, val: $arg) {
+        impl $name for Placeholder {
+            #![allow(unused_variables)]
+            fn perform(&mut self, $($arg_ident: $arg_ty),+) {
                 tracing::trace!("callback is none")
             }
         }
     };
 }
 
-placeholder!(RangeCallback, crate::RangeUpdate);
-placeholder!(LogCallback, std::sync::Arc<crate::http_client::Error>);
-placeholder!(BandwidthCallback, usize);
+callback!(RangeCallback, update: RangeUpdate);
+callback!(LogCallback, error: std::sync::Arc<http_client::Error>);
+callback!(BandwidthCallback, bandwidth: usize);
+
+callback!(IdRangeCallback, id: StreamId, update: RangeUpdate);
+callback!(
+    IdLogCallback,
+    id: StreamId, error: std::sync::Arc<http_client::Error>
+);
+callback!(IdBandwidthCallback, id: StreamId, bandwidth: usize);
+
+pub type UnconfiguredSB = StreamBuilder<false, Placeholder, Placeholder, Placeholder>;

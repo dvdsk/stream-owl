@@ -25,17 +25,6 @@ pub(crate) enum MaybeLimited<T> {
     NotLimited,
 }
 
-pub(crate) fn fmt_non_printable_option<T>(
-    retry_logger: &Option<T>,
-    fmt: &mut std::fmt::Formatter,
-) -> std::result::Result<(), std::fmt::Error> {
-    if retry_logger.is_some() {
-        fmt.write_str("Some(-not printable-)")
-    } else {
-        fmt.write_str("None")
-    }
-}
-
 pub(crate) async fn pausable<F>(
     task: F,
     mut pause_rx: mpsc::Receiver<bool>,

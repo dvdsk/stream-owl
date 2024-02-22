@@ -7,7 +7,7 @@ use tokio::sync::mpsc;
 use crate::network::{BandwidthAllowed, Network};
 use crate::retry::{RetryDurLimit, RetryLimit};
 use crate::{
-    BandwidthCallback, LogCallback, Manager, ManagerError, RangeCallback, StreamError, StreamId, Placeholder,
+    Manager, ManagerError, StreamError, StreamId, Placeholder, IdLogCallback, IdRangeCallback, IdBandwidthCallback,
 };
 
 use super::Callbacks;
@@ -53,9 +53,9 @@ impl Default for ManagerBuilder<Placeholder, Placeholder, Placeholder> {
 
 impl<L, B, R> ManagerBuilder<L, B, R>
 where
-    L: LogCallback,
-    B: BandwidthCallback,
-    R: RangeCallback,
+    L: IdLogCallback,
+    B: IdBandwidthCallback,
+    R: IdRangeCallback,
 {
     pub fn with_stream_defaults(mut self, defaults: StreamConfig) -> Self {
         self.stream_defaults = defaults;
@@ -109,8 +109,8 @@ where
 
     /// Perform an callback whenever a retry happens. Useful to log
     /// errors.
-    pub fn with_retry_callback<NewL: LogCallback>(
-        mut self,
+    pub fn with_retry_callback<NewL: IdLogCallback>(
+        self,
         callback: NewL,
     ) -> ManagerBuilder<NewL, B, R> {
         ManagerBuilder {
@@ -128,8 +128,8 @@ where
     }
 
     /// Perform an callback whenever the bandwidth has an update
-    pub fn with_range_callback<NewR: RangeCallback>(
-        mut self,
+    pub fn with_range_callback<NewR: IdRangeCallback>(
+        self,
         callback: NewR,
     ) -> ManagerBuilder<L, B, NewR> {
         ManagerBuilder {
@@ -148,8 +148,8 @@ where
 
     /// Perform an callback whenever the range locally available
     /// has changed
-    pub fn with_bandwidth_callback<NewB: BandwidthCallback>(
-        mut self,
+    pub fn with_bandwidth_callback<NewB: IdBandwidthCallback>(
+        self,
         callback: NewB,
     ) -> ManagerBuilder<L, NewB, R> {
         ManagerBuilder {
@@ -169,7 +169,7 @@ where
     pub fn build(
         self,
     ) -> (
-        Manager<R>,
+        Manager,
         impl Future<Output = ManagerError>,
         mpsc::UnboundedReceiver<(StreamId, StreamError)>,
     ) {
