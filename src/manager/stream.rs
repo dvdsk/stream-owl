@@ -2,6 +2,7 @@ use std::future::Future;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
+use async_trait::async_trait;
 use derivative::Derivative;
 use tokio::sync::mpsc::{self, Sender};
 use tokio::sync::Mutex;
@@ -30,14 +31,7 @@ impl Id {
         Self(id)
     }
 }
-// macro_rules! managed_async {
-//     ($fn_name:ident $($param:ident: $t:ty),*$(; $returns:ty)?) => {
-//         pub async fn $fn_name(&mut self, $($param: $t),*) $(-> $returns)? {
-//             self.handle.$fn_name($($param),*).await
-//         }
-//     };
-// }
-//
+
 // macro_rules! managed {
 //     ($fn_name:ident $($param:ident: $t:ty),*$(; $returns:ty)?) => {
 //         pub fn $fn_name(&mut self, $($param: $t),*) $(-> $returns)? {
@@ -46,25 +40,21 @@ impl Id {
 //     };
 // }
 
-pub(crate) trait ManagedHandleTrait {}
-impl<F: RangeCallback> ManagedHandleTrait for ManagedHandle<F> {}
-
-pub struct GenericLessManagedHandle {
+pub struct ManagedHandle {
     inner: Box<dyn ManagedHandleTrait>,
 }
 
-impl GenericLessManagedHandle {
-    pub(crate) fn from_generic<F: RangeCallback>(generic: ManagedHandle<F>) -> Self {
+impl ManagedHandle {
+    pub(crate) fn from_generic<F: RangeCallback>(generic: InnerManagedHandle<F>) -> Self {
         Self {
             inner: Box::new(generic) as Box<dyn ManagedHandleTrait>,
         }
     }
 }
 
-
 #[derive(Derivative)]
 #[derivative(Debug)]
-pub struct ManagedHandle<F: RangeCallback> {
+pub struct InnerManagedHandle<F: RangeCallback> {
     /// allows the handle to send a message
     /// to the manager to drop the streams future
     /// or increase/decrease priority.
@@ -73,7 +63,7 @@ pub struct ManagedHandle<F: RangeCallback> {
     pub(crate) handle: StreamHandle<F>,
 }
 
-impl<F: RangeCallback> Drop for ManagedHandle<F> {
+impl<F: RangeCallback> Drop for InnerManagedHandle<F> {
     fn drop(&mut self) {
         self.cmd_manager
             .try_send(Command::CancelStream(self.id()))
@@ -81,7 +71,15 @@ impl<F: RangeCallback> Drop for ManagedHandle<F> {
     }
 }
 
-impl<F: crate::RangeCallback> ManagedHandle<F> {
+#[async_trait]
+pub(crate) trait ManagedHandleTrait {
+    fn set_priority(&mut self, _arg: i32);
+    fn id(&self) -> Id;
+    // async fn pause(&mut self);
+    // async fn unpause(&mut self);
+}
+
+impl ManagedHandle {
     pub fn set_priority(&mut self, _arg: i32) {
         todo!()
     }
@@ -90,10 +88,31 @@ impl<F: crate::RangeCallback> ManagedHandle<F> {
         todo!()
     }
 }
+
+// macro_rules! managed_async {
+//     ($fn_name:ident $($param:ident: $t:ty),*$(; $returns:ty)?) => {
+//         async fn $fn_name(&mut self, $($param: $t),*) $(-> $returns)? {
+//             self.handle.$fn_name($($param),*).await
+//         }
+//     };
+// }
+
+#[async_trait]
+impl<F: RangeCallback> ManagedHandleTrait for InnerManagedHandle<F> {
+    fn set_priority(&mut self, _arg: i32) {
+        todo!()
+    }
+
+    fn id(&self) -> Id {
+        todo!()
+    }
+    // async fn pause(&mut self) {
+    //     // self.handle.pause().await
+    // }
+    // managed_async! {unpause}
+}
 /* TODO: make this work again <22-02-24> */
 //
-//     managed_async! {pause}
-//     managed_async! {unpause}
 //     managed_async! {limit_bandwidth bandwidth: BandwidthLimit}
 //     managed_async! {remove_bandwidth_limit}
 //     managed_async! {migrate_to_limited_mem_backend max_cap: usize; Result<(), MigrationError>}
@@ -124,7 +143,7 @@ impl StreamConfig {
         callbacks: WrappedCallbacks<L, B, R>,
     ) -> Result<
         (
-            ManagedHandle<R>,
+            InnerManagedHandle<R>,
             impl Future<Output = Result<StreamCanceld, StreamError>> + Send + 'static,
         ),
         crate::store::Error,
@@ -155,7 +174,7 @@ impl StreamConfig {
             pause_tx,
             bandwidth_lim_tx,
         };
-        let handle = ManagedHandle {
+        let handle = InnerManagedHandle {
             cmd_manager: manager_tx,
             handle: stream_handle,
         };

@@ -27,7 +27,7 @@ pub use network::{list_interfaces, BandwidthLimit};
 pub use reader::Reader;
 
 pub use manager::stream::Id as StreamId;
-pub use manager::stream::ManagedHandle as ManagedStreamHandle;
+pub use manager::stream::InnerManagedHandle as ManagedStreamHandle;
 pub use manager::Error as ManagerError;
 pub use manager::Manager;
 

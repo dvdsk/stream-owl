@@ -3,11 +3,12 @@ use tokio::task::JoinError;
 use crate::stream::StreamEnded;
 use crate::{StreamError, StreamId};
 
-use super::Command;
+use super::{Command, bandwidth};
 
 pub(super) enum Res {
     StreamComplete { id: StreamId },
     StreamError { id: StreamId, error: StreamError },
+    Bandwidth ( bandwidth::Update ),
     NewCmd(Command),
     Dropped,
 }

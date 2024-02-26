@@ -11,7 +11,7 @@ use tracing::{info, trace};
 use crate::stream::StreamEnded;
 use crate::{IdBandwidthCallback, IdLogCallback, IdRangeCallback, StreamError, StreamId};
 
-use super::stream::{GenericLessManagedHandle, StreamConfig};
+use super::stream::{ManagedHandle, ManagedHandleTrait, StreamConfig};
 use super::Callbacks;
 
 mod bandwidth;
@@ -23,8 +23,7 @@ use race_results::Res;
 pub(crate) enum Command {
     AddStream {
         #[derivative(Debug = "ignore")]
-        /* TODO: get rid of generics <21-02-24, dvdsk noreply@davidsk.dev> */
-        handle_tx: oneshot::Sender<GenericLessManagedHandle>,
+        handle_tx: oneshot::Sender<ManagedHandle>,
         config: StreamConfig,
         url: http::Uri,
     },
@@ -36,20 +35,20 @@ async fn wait_forever() -> StreamEnded {
     unreachable!()
 }
 
-struct Tomato<L: IdLogCallback, B: IdBandwidthCallback, R: IdRangeCallback> {
-    bandwidth_ctrl: bandwidth::Controller,
+struct State<L: IdLogCallback, B: IdBandwidthCallback, R: IdRangeCallback> {
+    bandwidth: bandwidth::Controller,
 
     cmd_tx: Sender<Command>,
     err_tx: UnboundedSender<(StreamId, StreamError)>,
     streams: JoinSet<StreamEnded>,
     abort_handles: HashMap<StreamId, AbortHandle>,
-    callbacks: Callbacks<L, B, R>,
+    callbacks: Callbacks<L, bandwidth::WrappedCallback<B>, R>,
 }
 
-impl<L: IdLogCallback, B: IdBandwidthCallback, R: IdRangeCallback> Tomato<L, B, R> {
+impl<L: IdLogCallback, B: IdBandwidthCallback, R: IdRangeCallback> State<L, B, R> {
     async fn add_stream(
         &mut self,
-        handle_tx: oneshot::Sender<GenericLessManagedHandle>,
+        handle_tx: oneshot::Sender<ManagedHandle>,
         config: StreamConfig,
         url: http::Uri,
     ) -> Result<(), crate::store::Error> {
@@ -65,7 +64,7 @@ impl<L: IdLogCallback, B: IdBandwidthCallback, R: IdRangeCallback> Tomato<L, B, 
 
         let abort_handle = self.streams.spawn(stream_task);
         self.abort_handles.insert(handle.id(), abort_handle);
-        let handle = GenericLessManagedHandle::from_generic(handle);
+        let handle = ManagedHandle::from_generic(handle);
         if let Err(_) = handle_tx.send(handle) {
             trace!("add_stream canceld on user side");
             // dropping the handle here will cancel the streams task
@@ -81,13 +80,26 @@ impl<L: IdLogCallback, B: IdBandwidthCallback, R: IdRangeCallback> Tomato<L, B, 
     ) -> Self {
         let mut streams = JoinSet::new();
         streams.spawn(wait_forever());
+
+        let Callbacks {
+            retry_log,
+            bandwidth,
+            range,
+        } = callbacks;
+        let (bandwidth_control, bandwidth) = bandwidth::Controller::new(bandwidth);
+        let callbacks = Callbacks {
+            retry_log,
+            bandwidth,
+            range,
+        };
+
         Self {
             cmd_tx,
             err_tx,
             streams,
             abort_handles: HashMap::new(),
             callbacks,
-            bandwidth_ctrl: bandwidth::Controller,
+            bandwidth: bandwidth_control,
         }
     }
 }
@@ -100,25 +112,27 @@ pub(super) async fn run<L: IdLogCallback, B: IdBandwidthCallback, R: IdRangeCall
 ) -> super::Error {
     use Command::*;
 
-    let mut tomato = Tomato::new(cmd_tx, err_tx, callbacks);
+    let mut state = State::new(cmd_tx, err_tx, callbacks);
 
     loop {
         let new_cmd = cmd_rx.recv().map(Res::from);
-        let stream_err = tomato.streams.join_next().map(Res::from);
+        let stream_err = state.streams.join_next().map(Res::from);
+        let bandwidth = state.bandwidth.wait_for_update().map(Res::Bandwidth);
 
-        match (new_cmd, stream_err).race().await {
+        match (new_cmd, stream_err, bandwidth).race().await {
+            Res::Bandwidth(update) => state.bandwidth.handle_update((), update),
             Res::NewCmd(AddStream {
                 handle_tx,
                 config,
                 url,
-            }) => tomato.add_stream(handle_tx, config, url).await.unwrap(),
+            }) => state.add_stream(handle_tx, config, url).await.unwrap(),
             Res::NewCmd(CancelStream(id)) => {
-                if let Some(handle) = tomato.abort_handles.remove(&id) {
+                if let Some(handle) = state.abort_handles.remove(&id) {
                     handle.abort();
                 }
             }
             Res::StreamError { id, error } => {
-                if let Err(SendError((id, error))) = tomato.err_tx.send((id, error)) {
+                if let Err(SendError((id, error))) = state.err_tx.send((id, error)) {
                     tracing::error!("stream {id:?} ran into an error, it could not be send to API user as the error stream receive part has been dropped. Error was: {error:?}")
                 }
             }

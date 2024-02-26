@@ -48,8 +48,6 @@ pub struct Handle<F: crate::RangeCallback> {
     #[derivative(Debug(format_with = "mutex_in_use"))]
     pub(crate) store_reader: Arc<TokioMutex<StoreReader>>,
     // used for flushing and migrations only
-    // /* TODO: try using Box<dyn something> to get rid of 
-    // the generics in the handle <dvdsk> */
     pub(crate) store_writer: StoreWriter<F>,
 }
 

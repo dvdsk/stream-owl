@@ -16,7 +16,7 @@ mod task;
 pub(crate) use task::Command;
 
 use self::builder::ManagerBuilder;
-use self::stream::{GenericLessManagedHandle, StreamConfig};
+use self::stream::{ManagedHandle, StreamConfig};
 use crate::Placeholder;
 
 #[derive(Debug)]
@@ -117,7 +117,7 @@ impl Manager {
     }
 
     /// panics if called from an async context
-    pub fn add(&mut self, url: http::Uri) -> stream::GenericLessManagedHandle {
+    pub fn add(&mut self, url: http::Uri) -> stream::ManagedHandle {
         let config = self.stream_defaults.clone();
         let (tx, rx) = oneshot::channel();
         self.cmd_tx
@@ -135,7 +135,7 @@ impl Manager {
         &mut self,
         url: http::Uri,
         configurator: impl FnOnce(StreamConfig) -> StreamConfig,
-    ) -> GenericLessManagedHandle {
+    ) -> ManagedHandle {
         let config = self.stream_defaults.clone();
         let config = (configurator)(config);
         let (tx, rx) = oneshot::channel();
