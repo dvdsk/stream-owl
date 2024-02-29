@@ -19,9 +19,9 @@ pub(crate) use capacity::Bounds as CapacityBounds;
 use capacity::CapacityNotifier;
 pub(crate) use capacity::{CapacityWatcher, WriterToken};
 
-use crate::RangeCallback;
 use crate::http_client::Size;
 use crate::store::range_watch::RangeUpdate;
+use crate::RangeCallback;
 
 #[derive(Debug)]
 pub(crate) struct StoreReader {
@@ -36,7 +36,7 @@ pub(crate) struct StoreReader {
 pub(crate) struct StoreWriter<R: RangeCallback> {
     pub(crate) curr_store: Arc<Mutex<Store>>,
     pub(crate) capacity_watcher: CapacityWatcher,
-    #[derivative(Debug="ignore")]
+    #[derivative(Debug = "ignore")]
     range_watch: range_watch::Sender<R>,
 }
 

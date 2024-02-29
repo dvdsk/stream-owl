@@ -1,20 +1,20 @@
-use std::collections::HashMap;
-
 use derivative::Derivative;
 use futures::FutureExt;
 use futures_concurrency::future::Race;
+use std::collections::HashMap;
 use tokio::sync::mpsc::{error::SendError, Receiver, Sender, UnboundedSender};
 use tokio::sync::oneshot;
 use tokio::task::{AbortHandle, JoinSet};
 use tracing::{info, trace};
 
-use crate::stream::StreamEnded;
+use crate::stream::{self, StreamEnded};
 use crate::{IdBandwidthCallback, IdLogCallback, IdRangeCallback, StreamError, StreamId};
 
-use super::stream::{ManagedHandle, ManagedHandleTrait, StreamConfig};
-use super::Callbacks;
+use super::handle::HandleOp;
+use super::stream::StreamConfig;
+use super::{CallWithId, Callbacks, ManagedHandle};
 
-mod bandwidth;
+pub(crate) mod bandwidth;
 mod race_results;
 use race_results::Res;
 
@@ -28,6 +28,7 @@ pub(crate) enum Command {
         url: http::Uri,
     },
     CancelStream(StreamId),
+    Handle(HandleOp),
 }
 
 async fn wait_forever() -> StreamEnded {
@@ -35,17 +36,22 @@ async fn wait_forever() -> StreamEnded {
     unreachable!()
 }
 
-struct State<L: IdLogCallback, B: IdBandwidthCallback, R: IdRangeCallback> {
+pub(crate) struct State<L: IdLogCallback, B: IdBandwidthCallback, R: IdRangeCallback> {
     bandwidth: bandwidth::Controller,
 
     cmd_tx: Sender<Command>,
     err_tx: UnboundedSender<(StreamId, StreamError)>,
-    streams: JoinSet<StreamEnded>,
-    abort_handles: HashMap<StreamId, AbortHandle>,
-    callbacks: Callbacks<L, bandwidth::WrappedCallback<B>, R>,
+    stream_tasks: JoinSet<StreamEnded>,
+    stream_handles: HashMap<StreamId, (AbortHandle, stream::Handle<CallWithId<R>>)>,
+    callbacks: Callbacks<L, B, R>,
 }
 
-impl<L: IdLogCallback, B: IdBandwidthCallback, R: IdRangeCallback> State<L, B, R> {
+impl<L, B, R> State<L, B, R>
+where
+    L: IdLogCallback,
+    B: IdBandwidthCallback,
+    R: IdRangeCallback,
+{
     async fn add_stream(
         &mut self,
         handle_tx: oneshot::Sender<ManagedHandle>,
@@ -55,17 +61,26 @@ impl<L: IdLogCallback, B: IdBandwidthCallback, R: IdRangeCallback> State<L, B, R
         let id = StreamId::new();
         let cmd_tx = self.cmd_tx.clone();
         let callbacks = self.callbacks.wrap(id);
+        let (config, alloc_guard) = self
+            .bandwidth
+            .register(id, config, &mut self.stream_handles)
+            .await;
         let (handle, stream_task) = async move {
             let (handle, stream_task) = config.start(url, cmd_tx, callbacks).await?;
-            let stream_task = stream_task.map(move |res| StreamEnded { res, id });
+            let stream_task = stream_task
+                .inspect(move |_| drop(alloc_guard)) // free up the allocated bandwidth
+                .map(move |res| StreamEnded { res, id });
             Result::<_, crate::store::Error>::Ok((handle, stream_task))
         }
         .await?;
 
-        let abort_handle = self.streams.spawn(stream_task);
-        self.abort_handles.insert(handle.id(), abort_handle);
-        let handle = ManagedHandle::from_generic(handle);
-        if let Err(_) = handle_tx.send(handle) {
+        let abort_handle = self.stream_tasks.spawn(stream_task);
+        self.stream_handles.insert(id, (abort_handle, handle));
+        if let Err(_) = handle_tx.send(ManagedHandle {
+            id,
+            cmd_tx: self.cmd_tx.clone(),
+            bandwidth_tx: self.bandwidth.get_tx(),
+        }) {
             trace!("add_stream canceld on user side");
             // dropping the handle here will cancel the streams task
         }
@@ -73,64 +88,80 @@ impl<L: IdLogCallback, B: IdBandwidthCallback, R: IdRangeCallback> State<L, B, R
         Ok(())
     }
 
-    fn new(
+    pub(crate) fn new(
         cmd_tx: Sender<Command>,
         err_tx: UnboundedSender<(StreamId, StreamError)>,
+        bandwidth_ctrl: bandwidth::Controller,
         callbacks: Callbacks<L, B, R>,
     ) -> Self {
-        let mut streams = JoinSet::new();
-        streams.spawn(wait_forever());
-
-        let Callbacks {
-            retry_log,
-            bandwidth,
-            range,
-        } = callbacks;
-        let (bandwidth_control, bandwidth) = bandwidth::Controller::new(bandwidth);
-        let callbacks = Callbacks {
-            retry_log,
-            bandwidth,
-            range,
-        };
+        let mut stream_tasks = JoinSet::new();
+        stream_tasks.spawn(wait_forever());
 
         Self {
             cmd_tx,
             err_tx,
-            streams,
-            abort_handles: HashMap::new(),
+            stream_tasks,
+            stream_handles: HashMap::new(),
             callbacks,
-            bandwidth: bandwidth_control,
+            bandwidth: bandwidth_ctrl,
         }
+    }
+
+    async fn handle_op(&mut self, op: HandleOp) {
+        let Some((_, handle)) = self.stream_handles.get_mut(op.id()) else {
+            assert!(
+                op.tx_closed(),
+                "ManagedHandle can not be dropped if tx is still open"
+            );
+            return;
+        };
+
+        // handle could be dropped while operation is running
+        let _ignore_err = match op {
+            HandleOp::Pause { tx, .. } => tx.send(handle.pause().await),
+            HandleOp::Unpause { tx, .. } => tx.send(handle.unpause().await),
+            HandleOp::TryGetReader { tx, .. } => tx.send(handle.try_get_reader()).map_err(|_| ()),
+            HandleOp::MigrateToLimitedMemBackend { tx, size, .. } => tx
+                .send(handle.migrate_to_limited_mem_backend(size).await)
+                .map_err(|_| ()),
+            HandleOp::MigrateToUnlimitedMemBackend { tx, .. } => tx
+                .send(handle.migrate_to_unlimited_mem_backend().await)
+                .map_err(|_| ()),
+            HandleOp::MigrateToDiskBackend { path, tx, .. } => tx
+                .send(handle.migrate_to_disk_backend(path).await)
+                .map_err(|_| ()),
+            HandleOp::Flush { tx, .. } => tx.send(handle.flush().await).map_err(|_| ()),
+        };
     }
 }
 
 pub(super) async fn run<L: IdLogCallback, B: IdBandwidthCallback, R: IdRangeCallback>(
-    cmd_tx: Sender<Command>,
+    mut state: State<L, B, R>,
     mut cmd_rx: Receiver<Command>,
-    err_tx: UnboundedSender<(StreamId, StreamError)>,
-    callbacks: Callbacks<L, B, R>,
 ) -> super::Error {
     use Command::*;
 
-    let mut state = State::new(cmd_tx, err_tx, callbacks);
-
     loop {
         let new_cmd = cmd_rx.recv().map(Res::from);
-        let stream_err = state.streams.join_next().map(Res::from);
+        let stream_err = state.stream_tasks.join_next().map(Res::from);
         let bandwidth = state.bandwidth.wait_for_update().map(Res::Bandwidth);
 
         match (new_cmd, stream_err, bandwidth).race().await {
-            Res::Bandwidth(update) => state.bandwidth.handle_update((), update),
+            Res::Bandwidth(update) => state
+                .bandwidth
+                .handle_update(&mut state.stream_handles, update),
             Res::NewCmd(AddStream {
                 handle_tx,
                 config,
                 url,
             }) => state.add_stream(handle_tx, config, url).await.unwrap(),
             Res::NewCmd(CancelStream(id)) => {
-                if let Some(handle) = state.abort_handles.remove(&id) {
-                    handle.abort();
+                state.bandwidth.remove(id);
+                if let Some((abort, _)) = state.stream_handles.remove(&id) {
+                    abort.abort();
                 }
             }
+            Res::NewCmd(Handle(op)) => state.handle_op(op).await,
             Res::StreamError { id, error } => {
                 if let Err(SendError((id, error))) = state.err_tx.send((id, error)) {
                     tracing::error!("stream {id:?} ran into an error, it could not be send to API user as the error stream receive part has been dropped. Error was: {error:?}")

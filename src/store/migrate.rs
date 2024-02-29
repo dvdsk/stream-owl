@@ -15,6 +15,7 @@ use super::{Store, StoreVariant};
 use crate::store;
 use crate::util::RangeLen;
 
+mod cancel;
 mod range_list;
 
 #[instrument(skip(store_writer))]
@@ -27,7 +28,7 @@ pub(crate) async fn to_mem<F: crate::RangeCallback>(
     }
 
     let mem = limited_mem::Memory::new(max_cap)?;
-    migrate(store_writer, Store::MemLimited(mem)).await
+    migrate(store_writer, Store::MemLimited(mem), cancel::GuardNotNeeded).await
 }
 
 #[instrument(skip(store_writer))]
@@ -39,7 +40,12 @@ pub(crate) async fn to_unlimited_mem<F: crate::RangeCallback>(
     }
 
     let mem = unlimited_mem::Memory::new();
-    migrate(store_writer, Store::MemUnlimited(mem)).await
+    migrate(
+        store_writer,
+        Store::MemUnlimited(mem),
+        cancel::GuardNotNeeded,
+    )
+    .await
 }
 
 #[instrument(skip(store_writer))]
@@ -51,8 +57,9 @@ pub(crate) async fn to_disk<F: crate::RangeCallback>(
         return Ok(());
     }
 
+    let guard = cancel::NewStoreCleanupGuard { path: path.clone() };
     let (disk, _) = Disk::new(path).await?;
-    migrate(store_writer, Store::Disk(disk)).await
+    migrate(store_writer, Store::Disk(disk), guard).await
 }
 
 #[derive(thiserror::Error, Debug)]
@@ -69,15 +76,21 @@ pub enum MigrationError {
     MigrateRead(store::Error),
     #[error("Error during migration, failed to write to new store: {0}")]
     MigrateWrite(store::Error),
-    #[error("Something went wrong while cleaning up no longer needed files")]
+    #[error("Something went wrong while cleaning up no longer needed files: {0}")]
     Cleanup(disk::Error),
 }
 
+/// cancel safe however will block shortly while cleaning up
 #[instrument(skip_all)]
-async fn migrate<F: crate::RangeCallback>(
+async fn migrate<F, G>(
     store_writer: &mut StoreWriter<F>,
     mut target: Store,
-) -> Result<(), MigrationError> {
+    cleanup_new_on_cancel: G,
+) -> Result<(), MigrationError>
+where
+    F: crate::RangeCallback,
+    G: Sized,
+{
     let StoreWriter {
         curr_store,
         capacity_watcher,
@@ -103,14 +116,18 @@ async fn migrate<F: crate::RangeCallback>(
 
     debug!("updating callbacks and range_watch");
     range_watch.send_diff(old_ranges, curr.ranges());
+    std::mem::forget(cleanup_new_on_cancel);
 
     if let Store::Disk(old_disk_store) = old {
+        let continue_cleanup_on_cancel = cancel::NewStoreCleanupGuard {
+            path: old_disk_store.path.clone(),
+        };
         old_disk_store
-            .remove_files()
+            .cleanup()
             .await
             .map_err(MigrationError::Cleanup)?;
+        std::mem::forget(continue_cleanup_on_cancel);
     }
-
     info!("migration done");
     Ok(())
 }

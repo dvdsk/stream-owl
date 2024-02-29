@@ -3,20 +3,23 @@ use std::time::Duration;
 use derivative::Derivative;
 use tokio::sync::{mpsc, oneshot};
 
-use crate::network::{BandwidthAllowed, BandwidthLimit, Network};
+use crate::network::{BandwidthAllowed, Network};
 use crate::retry::{RetryDurLimit, RetryLimit};
 use crate::{
-    BandwidthCallback, IdBandwidthCallback, IdLogCallback, IdRangeCallback, LogCallback,
-    RangeCallback, RangeUpdate,
+    BandwidthCallback, BandwidthLimit, IdBandwidthCallback, IdLogCallback, IdRangeCallback,
+    LogCallback, RangeCallback, RangeUpdate,
 };
 
 mod builder;
+mod handle;
 pub mod stream;
 mod task;
+pub use handle::ManagedHandle;
 pub(crate) use task::Command;
 
 use self::builder::ManagerBuilder;
-use self::stream::{ManagedHandle, StreamConfig};
+use self::stream::StreamConfig;
+use self::task::bandwidth;
 use crate::Placeholder;
 
 #[derive(Debug)]
@@ -96,14 +99,15 @@ where
     }
 }
 
+/* TODO: drop causes task to shutdown? <dvdsk> */
 #[derive(Derivative)]
 #[derivative(Debug)]
 pub struct Manager {
     cmd_tx: mpsc::Sender<task::Command>,
+    bandwidth_tx: mpsc::Sender<bandwidth::Update>,
 
     stream_defaults: StreamConfig,
     restriction: Option<Network>,
-    total_bandwidth: BandwidthAllowed,
 
     retry_disabled: bool,
     max_retries: RetryLimit,
@@ -117,21 +121,22 @@ impl Manager {
     }
 
     /// panics if called from an async context
-    pub fn add(&mut self, url: http::Uri) -> stream::ManagedHandle {
+    pub async fn add(&mut self, url: http::Uri) -> ManagedHandle {
         let config = self.stream_defaults.clone();
         let (tx, rx) = oneshot::channel();
         self.cmd_tx
-            .blocking_send(Command::AddStream {
+            .send(Command::AddStream {
                 url,
                 handle_tx: tx,
                 config,
             })
+            .await
             .expect("manager task should still run");
-        rx.blocking_recv().unwrap()
+        rx.await.expect("manager task should still run")
     }
 
     /// panics if called from an async context
-    pub fn add_with_options(
+    pub async fn add_with_options(
         &mut self,
         url: http::Uri,
         configurator: impl FnOnce(StreamConfig) -> StreamConfig,
@@ -140,16 +145,21 @@ impl Manager {
         let config = (configurator)(config);
         let (tx, rx) = oneshot::channel();
         self.cmd_tx
-            .blocking_send(Command::AddStream {
+            .send(Command::AddStream {
                 url,
                 handle_tx: tx,
                 config,
             })
+            .await
             .expect("manager task should still run");
-        rx.blocking_recv().unwrap()
+        rx.await.expect("manger task should still run")
     }
 
-    pub fn limit_bandwidth(&mut self, _bandwidth: BandwidthLimit) {
-        todo!();
+    pub async fn limit_bandwidth(&mut self, limit: BandwidthLimit) {
+        let bandwidth = BandwidthAllowed::Limited(limit);
+        self.bandwidth_tx
+            .send(bandwidth::Update::NewGlobalLimit { bandwidth })
+            .await
+            .expect("")
     }
 }

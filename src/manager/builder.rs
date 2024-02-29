@@ -1,3 +1,4 @@
+use std::num::NonZeroU32;
 use std::time::Duration;
 
 use derivative::Derivative;
@@ -7,9 +8,11 @@ use tokio::sync::mpsc;
 use crate::network::{BandwidthAllowed, Network};
 use crate::retry::{RetryDurLimit, RetryLimit};
 use crate::{
-    Manager, ManagerError, StreamError, StreamId, Placeholder, IdLogCallback, IdRangeCallback, IdBandwidthCallback,
+    BandwidthLimit, IdBandwidthCallback, IdLogCallback, IdRangeCallback, Manager, ManagerError,
+    Placeholder, StreamError, StreamId,
 };
 
+use super::task::bandwidth;
 use super::Callbacks;
 use super::StreamConfig;
 
@@ -18,7 +21,7 @@ use super::StreamConfig;
 pub struct ManagerBuilder<L, B, R> {
     stream_defaults: StreamConfig,
     restriction: Option<Network>,
-    total_bandwidth: BandwidthAllowed,
+    bandwidth_lim: BandwidthAllowed,
 
     retry_disabled: bool,
     max_retries: RetryLimit,
@@ -33,13 +36,12 @@ pub struct ManagerBuilder<L, B, R> {
     range_callback: R,
 }
 
-
 impl Default for ManagerBuilder<Placeholder, Placeholder, Placeholder> {
     fn default() -> Self {
         Self {
             stream_defaults: StreamConfig::default(),
             restriction: None,
-            total_bandwidth: BandwidthAllowed::default(),
+            bandwidth_lim: BandwidthAllowed::default(),
             retry_disabled: false,
             max_retries: RetryLimit::default(),
             max_retry_dur: RetryDurLimit::default(),
@@ -61,8 +63,8 @@ where
         self.stream_defaults = defaults;
         self
     }
-    pub fn with_maximum_total_bandwidth(mut self, network: Network) -> Self {
-        self.restriction = Some(network);
+    pub fn with_maximum_total_bandwidth(mut self, bandwidth: NonZeroU32) -> Self {
+        self.bandwidth_lim = BandwidthAllowed::Limited(BandwidthLimit(bandwidth));
         self
     }
 
@@ -116,7 +118,7 @@ where
         ManagerBuilder {
             stream_defaults: self.stream_defaults,
             restriction: self.restriction,
-            total_bandwidth: self.total_bandwidth,
+            bandwidth_lim: self.bandwidth_lim,
             retry_disabled: self.retry_disabled,
             max_retries: self.max_retries,
             max_retry_dur: self.max_retry_dur,
@@ -135,7 +137,7 @@ where
         ManagerBuilder {
             stream_defaults: self.stream_defaults,
             restriction: self.restriction,
-            total_bandwidth: self.total_bandwidth,
+            bandwidth_lim: self.bandwidth_lim,
             retry_disabled: self.retry_disabled,
             max_retries: self.max_retries,
             max_retry_dur: self.max_retry_dur,
@@ -155,7 +157,7 @@ where
         ManagerBuilder {
             stream_defaults: self.stream_defaults,
             restriction: self.restriction,
-            total_bandwidth: self.total_bandwidth,
+            bandwidth_lim: self.bandwidth_lim,
             retry_disabled: self.retry_disabled,
             max_retries: self.max_retries,
             max_retry_dur: self.max_retry_dur,
@@ -181,19 +183,31 @@ where
             bandwidth: self.bandwidth_callback,
             range: self.range_callback,
         };
+
+        let (bandwidth_control, bandwidth) =
+            bandwidth::Controller::new(callbacks.bandwidth, self.bandwidth_lim);
+        let callbacks = Callbacks {
+            retry_log: callbacks.retry_log,
+            bandwidth,
+            range: callbacks.range,
+        };
+
+        let bandwidth_tx = bandwidth_control.get_tx();
+        let task_state =
+            super::task::State::new(cmd_tx.clone(), err_tx, bandwidth_control, callbacks);
         (
             Manager {
-                cmd_tx: cmd_tx.clone(),
+                cmd_tx,
                 stream_defaults: self.stream_defaults,
 
                 restriction: self.restriction,
-                total_bandwidth: self.total_bandwidth,
                 retry_disabled: self.retry_disabled,
                 max_retries: self.max_retries,
                 max_retry_dur: self.max_retry_dur,
                 timeout: self.timeout,
+                bandwidth_tx,
             },
-            super::task::run(cmd_tx, cmd_rx, err_tx, callbacks),
+            super::task::run(task_state, cmd_rx),
             err_rx,
         )
     }

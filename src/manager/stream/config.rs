@@ -4,6 +4,7 @@ use std::time::Duration;
 
 use derivative::Derivative;
 
+use crate::manager::task::bandwidth::Priority;
 use crate::network::{BandwidthAllowed, BandwidthLimit, Network};
 use crate::store::StorageChoice;
 use crate::retry::{RetryDurLimit, RetryLimit};
@@ -19,6 +20,7 @@ pub struct StreamConfig {
     pub(crate) restriction: Option<Network>,
     pub(crate) start_paused: bool,
     pub(crate) bandwidth: BandwidthAllowed,
+    pub(crate) priority: Priority,
 
     pub(crate) retry_disabled: bool,
     pub(crate) max_retries: RetryLimit,
@@ -42,6 +44,10 @@ impl StreamConfig {
     /// Default is false
     pub fn start_paused(mut self, start_paused: bool) -> Self {
         self.start_paused = start_paused;
+        self
+    }
+    pub fn with_priority(mut self, priority: Priority) -> Self {
+        self.priority = priority;
         self
     }
     /// Default is 10_000 bytes

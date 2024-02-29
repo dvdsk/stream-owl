@@ -10,8 +10,8 @@ use tokio::fs::File;
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 use tracing::{debug, instrument};
 
-use crate::util::MaybeLimited;
 use super::RangeUpdate;
+use crate::util::MaybeLimited;
 
 use self::progress::Progress;
 
@@ -24,7 +24,7 @@ pub(crate) struct Disk {
     last_write: u64,
     #[derivative(Debug = "ignore")]
     file: File,
-    path: PathBuf,
+    pub(super) path: PathBuf,
     progress: Progress,
 }
 
@@ -177,13 +177,17 @@ impl Disk {
         Ok(())
     }
 
-    pub(crate) async fn remove_files(self) -> Result<(), Error> {
+    pub(crate) async fn cleanup(self) -> Result<(), Error> {
         let path = self.path.clone();
         let progress_path = progress::progress_path(self.path.clone());
 
         // closes handles to the file
         drop(self);
-        tokio::fs::remove_file(path).await.map_err(Error::RemovingFiles)?;
-        tokio::fs::remove_file(progress_path).await.map_err(Error::RemovingFiles)
+        tokio::fs::remove_file(path)
+            .await
+            .map_err(Error::RemovingFiles)?;
+        tokio::fs::remove_file(progress_path)
+            .await
+            .map_err(Error::RemovingFiles)
     }
 }

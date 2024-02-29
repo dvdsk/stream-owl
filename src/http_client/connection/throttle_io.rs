@@ -127,7 +127,7 @@ impl<B> ThrottlableIo<B> {
         this.inner.set_send_buf_size(send_buf_size)?;
 
         let burst_size = limit.optimal_burst_size(send_buf_size);
-        let limit = NonZeroU32::new(limit.0.get()).unwrap();
+        let limit = NonZeroU32::new(limit.0.get() as u32).unwrap();
         let quota = Quota::per_second(limit).allow_burst(burst_size);
         debug!("New ratelimiter quota: {quota:?}, socket send_buf size is: {send_buf_size}");
         let new = RateLimiter::direct_with_clock(quota, &MonotonicClock::default());

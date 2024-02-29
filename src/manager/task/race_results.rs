@@ -10,6 +10,7 @@ pub(super) enum Res {
     StreamError { id: StreamId, error: StreamError },
     Bandwidth ( bandwidth::Update ),
     NewCmd(Command),
+    /// The handle to the manager was dropped
     Dropped,
 }
 
