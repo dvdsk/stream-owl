@@ -10,6 +10,9 @@ use tokio::sync::mpsc;
 use tokio::task::AbortHandle;
 use tokio::time;
 
+mod divide;
+mod allocation;
+
 use crate::manager::stream::StreamConfig;
 use crate::network::BandwidthAllowed;
 use crate::{BandwidthLimit, IdBandwidthCallback, RangeCallback, StreamHandle, StreamId};
@@ -96,30 +99,6 @@ impl<B: IdBandwidthCallback> IdBandwidthCallback for WrappedCallback<B> {
     }
 }
 
-type Bandwidth = u32;
-#[derive(Debug, Clone)]
-struct AllocationInfo {
-    id: StreamId,
-    target: BandwidthAllowed,
-    curr_io_limit: Bandwidth,
-    stream_still_exists: Arc<AtomicBool>,
-}
-
-/// dropping this will free up the allocated bandwidth
-pub(crate) struct AllocationGuard {
-    stream_still_exists: Arc<AtomicBool>,
-    tx: mpsc::Sender<Update>,
-    id: StreamId,
-}
-
-impl Drop for AllocationGuard {
-    fn drop(&mut self) {
-        let _ignore_error = self.tx.try_send(Update::Drop(self.id));
-        // if the send fails the backup atomic will ensure
-        // this streams allocation gets cleared eventually
-        self.stream_still_exists.store(false, Ordering::Relaxed);
-    }
-}
 
 pub(crate) struct Controller {
     rx: mpsc::Receiver<Update>,
@@ -128,8 +107,8 @@ pub(crate) struct Controller {
     next_sweep: Instant,
     // we where using this but no longer need it
     // might still be up for graps though
-    leftover: Bandwidth,
-    allocated_by_prio: BTreeMap<Priority, BTreeMap<Bandwidth, AllocationInfo>>,
+    leftover: allocation::Bandwidth,
+    allocated_by_prio: BTreeMap<Priority, allocation::Allocations>,
 }
 
 impl Controller {
@@ -202,7 +181,7 @@ impl Controller {
         id: StreamId,
         mut config: StreamConfig,
         handles: &mut HashMap<StreamId, (AbortHandle, StreamHandle<R>)>,
-    ) -> (StreamConfig, AllocationGuard) {
+    ) -> (StreamConfig, allocation::AllocationGuard) {
         use BandwidthAllowed as B;
         let init_limit = match config.bandwidth {
             B::UnLimited => 10_000,
@@ -213,25 +192,24 @@ impl Controller {
             NonZeroU32::new(allocated_bw).expect("allocated_bandwidth should never be zero"),
         ));
 
-        let guard = AllocationGuard {
+        let guard = allocation::AllocationGuard {
             tx: self.tx.clone(),
             stream_still_exists: Arc::new(AtomicBool::new(true)),
             id,
         };
-        let info = AllocationInfo {
+        let info = allocation::AllocationInfo {
             id,
             curr_io_limit: allocated_bw,
+            allocated: allocated_bw,
             target: config.bandwidth.clone(),
             stream_still_exists: guard.stream_still_exists.clone(),
         };
 
         if let Some(list) = self.allocated_by_prio.get_mut(&config.priority) {
-            let existing = list.insert(allocated_bw, info);
-            assert!(existing.is_none());
+            list.insert(info);
         } else {
-            let mut list = BTreeMap::new();
-            list.insert(allocated_bw, info);
-            self.allocated_by_prio.insert(config.priority, list);
+            self.allocated_by_prio
+                .insert(config.priority, allocation::Allocations::new(info));
         }
 
         self.apply_new_limits(handles).await;
@@ -242,18 +220,22 @@ impl Controller {
         &self,
         handles: &mut HashMap<StreamId, (AbortHandle, StreamHandle<R>)>,
     ) {
-        for (new_bandwidth, AllocationInfo { id, .. }) in self
+        for allocation::AllocationInfo {
+            allocated: new_bw,
+            id,
+            ..
+        } in self
             .allocated_by_prio
             .iter()
             .flat_map(|(_, list)| list)
-            .filter(|(allocated, info)| **allocated != info.curr_io_limit)
+            .filter(|info| info.allocated != info.curr_io_limit)
         {
             let Some((_, handle)) = handles.get(id) else {
                 continue;
             };
             handle
                 .limit_bandwidth(BandwidthLimit(
-                    NonZeroU32::new(*new_bandwidth).expect("todo handle unlimited dl speed"),
+                    NonZeroU32::new(*new_bw).expect("todo handle unlimited dl speed"),
                 ))
                 .await
         }
@@ -273,7 +255,7 @@ impl Controller {
         for p in ((Priority::lowest() as usize)..(priority as usize)).map(Priority::from_usize) {
             let allocced = self.total_allocated_at(p);
             if allocced < still_needed {
-                let leftover = self.redevide(p, still_needed - allocced);
+                let leftover = self.redivide(p, still_needed - allocced);
                 self.leftover += leftover;
                 return limit;
             } else {
@@ -284,63 +266,18 @@ impl Controller {
 
         // could not take enough from lower prio levels, take from same prio
         // starting with the biggest stopping once done
-        let allocced = self.total_allocated_at(priority);
-        let n_streams = self
-            .allocated_by_prio
-            .get(&priority)
-            .map(BTreeMap::len)
-            .unwrap_or(0) as u32;
-        let mean = allocced / n_streams;
-        let Some(list) = self.allocated_by_prio.get(&priority) else {
-            return limit - still_needed; // out of options return what we got
-        };
-
-
-
-        todo!()
-    }
-
-    fn redivide_fair(&mut self, p: Priority, wished_for: u32) -> u32 {
-        let Some(list) = self.allocated_by_prio.get_mut(&p) else {
-            return 0;
-        };
-
-        let Some(biggest) = list.pop_last() else {
-            return 0;
-        };
-        let Some(next_biggest) = list.pop_last() else {
-            if biggest.0 / 2 >= wished_for {
-                list.insert(biggest.0 /2, biggest.1);
-                return biggest.0 / 2;
-            } else {
-                list.insert(biggest.0 - wished_for, biggest.1);
-                return wished_for;
-            }
-        };
-
-        let still_needed = wished_for;
-        let mut stack = vec![biggest, next_biggest];
-        if biggest.0 - next_biggest.0 >= wished_for {
-            list.insert(biggest.0 - wished_for, biggest.1);
-            list.insert(next_biggest.0, next_biggest.1);
-            return wished_for;
-        }
-
-        let Some(next) = list.pop_last() else {
-            let possible = (biggest.0 + next_biggest.0) / stack.len() as u32;
-            list.insert(possible, biggest.1);
-            list.insert(possible, next_biggest.1);
-            return possible;
-        };
-
-        stack.push(next);
-        0
+        still_needed -= self.redivide_fair(priority, still_needed);
+        limit - still_needed
     }
 
     fn total_allocated_at(&self, priority: Priority) -> u32 {
         self.allocated_by_prio
             .get(&priority)
-            .map(|list| list.iter().map(|(bandwidth, _)| bandwidth).sum())
+            .map(|list| {
+                list.into_iter()
+                    .map(|allocation::AllocationInfo { allocated, .. }| allocated)
+                    .sum()
+            })
             .unwrap_or(0)
     }
 
@@ -357,46 +294,10 @@ impl Controller {
         };
 
         let mut freed = 0;
-        let zeroed_budget = std::mem::take(list)
-            .into_iter()
-            .inspect(|(bandwidth, _)| freed += bandwidth)
-            .map(|(_, val)| (0, val));
-        list.extend(zeroed_budget);
-
+        for info in list {
+            freed += info.allocated;
+            info.allocated = 0;
+        }
         freed
-    }
-
-    /// returns the undividable leftovers
-    fn redevide(&mut self, p: Priority, allocced: u32) -> u32 {
-        let list = self
-            .allocated_by_prio
-            .get_mut(&p)
-            .expect("there bandwidth allocated here");
-
-        let mut to_divide = allocced;
-        loop {
-            let new_budget = to_divide / (list.len() as u32);
-            let leftover = list
-                .range(0..new_budget)
-                .map(|(bandwidth, _)| bandwidth)
-                .sum::<u32>();
-
-            if leftover == 0 {
-                break;
-            }
-            to_divide += allocced + leftover;
-        }
-
-        let new_budget = to_divide / (list.len() as u32);
-        let over_budget: Vec<_> = list.range_mut(new_budget..).map(|(key, _)| *key).collect();
-        for over_budget in over_budget.into_iter() {
-            let entry = list
-                .remove(&over_budget)
-                .expect("map didnt change between collect and this");
-            let existing = list.insert(new_budget, entry);
-            assert!(existing.is_none());
-        }
-        let leftover = to_divide % (list.len() as u32);
-        leftover
     }
 }

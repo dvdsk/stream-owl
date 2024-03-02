@@ -24,9 +24,14 @@ pub struct Id(usize);
 
 impl Id {
     pub(crate) fn new() -> Self {
-        static NEXT_ID: AtomicUsize = AtomicUsize::new(0);
+        // zero is reserved
+        static NEXT_ID: AtomicUsize = AtomicUsize::new(1);
         let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
         Self(id)
+    }
+
+    pub(crate) fn placeholder() -> Id {
+        Self(0)
     }
 }
 
