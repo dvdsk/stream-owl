@@ -101,6 +101,10 @@ impl Allocations {
 
         self.0[start..end].iter_mut()
     }
+
+    pub(crate) fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
 }
 
 impl<'a> Extend<AllocationInfo> for &'a mut Allocations {

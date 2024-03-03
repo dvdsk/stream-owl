@@ -41,24 +41,7 @@ impl super::Controller {
             return 0;
         };
 
-        let Some(biggest) = list.pop_biggest() else {
-            return 0;
-        };
-        // let Some(next_biggest) = list.pop_biggest() else {
-        //     let mut only_element = biggest;
-        //     if wished_for <= only_element.allocated / 2 {
-        //         only_element.allocated -= wished_for;
-        //         list.insert(only_element);
-        //         return wished_for;
-        //     } else {
-        //         only_element.allocated = only_element.allocated / 2;
-        //         let allocated = only_element.allocated;
-        //         list.insert(only_element);
-        //         return allocated;
-        //     }
-        // };
-
-        take_flattening_the_top(wished_for, biggest, list)
+        take_flattening_the_top(wished_for, list)
     }
 }
 
@@ -66,62 +49,47 @@ impl super::Controller {
 /// Takes the minimum from the top allocations until:
 ///  A: The required amount is freed
 ///  B: The required amount is equal to the largest
-fn take_flattening_the_top(
-    wished_for: u32,
-    biggest: AllocationInfo,
-    mut list: &mut Allocations,
-) -> u32 {
-    // let placeholder = placeholder_info(wished_for);
-    // list.insert(placeholder);
+fn take_flattening_the_top(wished_for: u32, mut list: &mut Allocations) -> u32 {
+    let placeholder = placeholder_info(wished_for);
+    list.insert(placeholder);
 
-    // visualize the stack as N bars. Each loop we slice
-    // off the top M bars. They therefore each time have the same
-    // height. We slice them off such that they are of equal height
-    // with the next highest bar. This results in M+1 new top height
-    // bars.
-    let total = list.total_allocated();
+    // visualize the list as N bars. Each loop we slice off the top of M bars
+    // (we keep those in `flat top`. We start with M = 1, and increase M in
+    // steps of one. We slice the M bars off such that they are the same height
+    // as the highest next bar not in M. This grows M by one.
     let mut sliced_off = 0;
-    let mut flat_top = vec![biggest];
+    let mut flat_top = vec![list
+        .pop_biggest()
+        .expect("at least placeholder is in the list")];
     let mut flat_top_height = flat_top[0].allocated;
 
-    let (final_height, freed) = loop {
+    let (final_height, left_over) = loop {
         let Some(next) = list.pop_biggest() else {
-            // everything is flat now, should be flat with the
-            // new allocation added => mean
-            let total_bw = sliced_off + flat_top_height * flat_top.len() as u32;
-            let final_height = total_bw / (flat_top.len() as u32 + 1);
-            let left_over = total_bw % (flat_top.len() as u32 + 1);
-            break (final_height, final_height + left_over);
+            // since we added the placeholder with the wished allocation we
+            // must at least slice off the placeholders allocated bytes
+            let last_slice_size = wished_for - sliced_off;
+            // everything is flat now so shave off what we still need
+            let slice_y = last_slice_size.div_ceil(flat_top.len() as u32);
+            let left_over = slice_y * (flat_top.len() as u32) - last_slice_size;
+
+            let final_height = flat_top_height - slice_y;
+            break (final_height, left_over);
         };
 
         let next_height = next.allocated;
-        // let next_height = next_height.min(wished_for);
-        // if next_height < wished_for {
-        //     dbg!();
-        //     return 0;
-        // }
-
         let slice_y = flat_top_height - next_height;
         let about_to_slice_off = slice_y * flat_top.len() as u32;
 
         // about to slice off more then we need, change the slice_y
         if sliced_off + about_to_slice_off >= wished_for {
-            dbg!();
+            list.insert(next);
             let last_slice_size = wished_for - sliced_off;
-            let slice_y = last_slice_size / flat_top.len() as u32;
+            let slice_y = last_slice_size.div_ceil(flat_top.len() as u32);
+            let left_over = slice_y * (flat_top.len() as u32) - last_slice_size;
 
             let final_height = flat_top_height - slice_y;
-            break (final_height, wished_for);
+            break (final_height, left_over);
         }
-
-        // let left_in_list = total - sliced_off;
-        // if dbg!(next_height < wished_for) && dbg!(left_in_list < wished_for) {
-        //     dbg!();
-        //     let total_bw = sliced_off + flat_top_height * flat_top.len() as u32;
-        //     let final_height = total_bw / (flat_top.len() as u32 + 1);
-        //     let left_over = total_bw % (flat_top.len() as u32 + 1);
-        //     break (final_height, final_height + left_over);
-        // }
 
         // do the slice
         sliced_off += about_to_slice_off;
@@ -133,13 +101,23 @@ fn take_flattening_the_top(
         item.allocated = final_height;
     }
 
+    let placeholder = flat_top
+        .iter()
+        .find(is_placeholder)
+        .expect("we put it in at the top");
+    let freed = placeholder.allocated + left_over;
     list.extend(flat_top.into_iter().filter(not_placeholder));
     return freed;
+}
+
+fn is_placeholder(item: &&AllocationInfo) -> bool {
+    item.id == StreamId::placeholder()
 }
 
 fn not_placeholder(item: &AllocationInfo) -> bool {
     item.id != StreamId::placeholder()
 }
+
 fn placeholder_info(wished_for: u32) -> AllocationInfo {
     AllocationInfo {
         id: StreamId::placeholder(),
@@ -178,12 +156,15 @@ mod tests {
     ) {
         let mut list = Allocations::default();
         (&mut list).extend(existing_bw.into_iter().map(info));
-        let biggest = list.pop_biggest().expect("list size > 1");
 
-        let res = take_flattening_the_top(wished_for, biggest, &mut list);
+        let res = take_flattening_the_top(wished_for, &mut list);
         let list: Vec<_> = list.into_iter().map(|info| info.allocated).collect();
         assert_eq!(list.as_slice(), &resulting_bw);
-        assert_eq!(res, got);
+        assert_eq!(res, got, "allocated bandwidth is wrong");
+        assert_eq!(
+            existing_bw.iter().sum::<u32>(),
+            resulting_bw.iter().sum::<u32>() + got
+        );
     }
 
     #[test]
@@ -192,12 +173,22 @@ mod tests {
     }
 
     #[test]
-    fn one_stream() {
+    fn already_flat() {
         do_test([32], 32, [16], 16)
     }
 
     #[test]
+    fn one_smaller_stream() {
+        do_test([10], 32, [5], 5)
+    }
+
+    #[test]
     fn big_then_small() {
-        do_test([100, 10, 5], 80, [50, 10, 5], 50)
+        do_test([100, 10, 5], 80, [5, 10, 50], 50)
+    }
+
+    #[test]
+    fn empty() {
+        do_test([0], 80, [0], 0)
     }
 }
