@@ -158,10 +158,6 @@ impl Allocations {
         Some(self.0.remove(idx))
     }
 
-    pub(crate) fn iter(&self) -> slice::Iter<AllocationInfo> {
-        self.0.iter()
-    }
-
     /// at the end of the iteration the order is restored
     pub(crate) fn iter_mut(&mut self) -> IterMut {
         IterMut(self.0.iter_mut())

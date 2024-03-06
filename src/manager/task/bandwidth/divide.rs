@@ -147,6 +147,51 @@ struct FlatBottom<'a> {
     list: Vec<&'a mut AllocationInfo>,
 }
 
+impl<'a> FlatBottom<'a> {
+    fn new(smallest: &'a mut AllocationInfo) -> Self {
+        Self {
+            height: smallest.allocated,
+            limit: smallest.best_limit(),
+            list: vec![smallest],
+        }
+    }
+
+    fn len(&self) -> u32 {
+        self.list.len() as u32
+    }
+
+    fn push(&mut self, new: &'a mut AllocationInfo) {
+        self.list.push(new)
+    }
+
+    fn remove_any_at_limit(&mut self, curr_height: Bandwidth) {
+        while let Some((idx, _)) = self
+            .list
+            .iter()
+            .enumerate()
+            .find(|(_, info)| info.best_limit() == curr_height)
+        {
+            let at_limit = self.list.remove(idx);
+            at_limit.allocated = curr_height;
+            eprintln!("removing: {}", curr_height);
+        }
+
+        self.height = curr_height.max(self.list[0].allocated);
+        self.limit = self
+            .list
+            .iter()
+            .map(|info| info.best_limit())
+            .min()
+            .expect("flat_bottom is never empty");
+    }
+
+    fn apply(&mut self, final_height: u32) {
+        for item in &mut self.list {
+            item.allocated = final_height;
+        }
+    }
+}
+
 /// returns left over bandwidth
 pub(crate) fn divide_new_bw<'a>(
     mut iter: impl Iterator<Item = &'a mut AllocationInfo>,
@@ -157,90 +202,63 @@ pub(crate) fn divide_new_bw<'a>(
     };
 
     let mut spread_out = 0;
-    let mut flat_bottom = vec![smallest];
-    let mut flat_bottom_height = flat_bottom[0].allocated;
-    let mut flat_bottom_limit = flat_bottom[0].best_limit();
+    let mut flat = FlatBottom::new(smallest);
 
     let (final_height, left_over) = loop {
         let Some(next) = iter.next() else {
-            while flat_bottom.len() > 1 {
-                let ideal_slice_size = to_divide - spread_out;
-                let ideal_slice = ideal_slice_size / (flat_bottom.len() as u32);
-                let next_height = flat_bottom_height + ideal_slice;
-
-                if next_height > flat_bottom_limit {
-                    let slice_y = flat_bottom_limit - flat_bottom_height;
-                    let about_to_spread_out = slice_y * flat_bottom.len() as u32;
-                    spread_out += dbg!(about_to_spread_out);
-                    remove_any_at_limit(&mut flat_bottom, flat_bottom_limit);
-                    flat_bottom_height = flat_bottom_limit.max(flat_bottom[0].allocated);
-                    flat_bottom_limit = flat_bottom
-                        .iter()
-                        .map(|info| info.best_limit())
-                        .min()
-                        .expect("flat_bottom is never empty");
-                    dbg!(flat_bottom_height, flat_bottom_limit, spread_out);
-                } else {
-                    break;
-                }
-            }
-
-            let ideal_slice_size = to_divide - spread_out;
-            let ideal_slice_y = ideal_slice_size / (flat_bottom.len() as u32);
-
-            let final_height = (flat_bottom_height + ideal_slice_y).min(flat_bottom_limit);
-            let slice_y = final_height - flat_bottom_height;
-            let about_to_spread_out = slice_y * flat_bottom.len() as u32;
-            let left_over = to_divide - spread_out - about_to_spread_out;
-
-            break (final_height, left_over);
+            break divide_within_flat(&mut flat, &mut spread_out, to_divide);
         };
 
-        let next_height = next.allocated.min(flat_bottom_limit);
-        let slice_y = next_height - flat_bottom_height;
-        let about_to_spread_out = slice_y * flat_bottom.len() as u32;
+        let next_height = next.allocated.min(flat.limit);
+        let slice_y = next_height - flat.height;
+        let about_to_spread_out = slice_y * flat.len();
 
         // about to slice off more then we need, change the slice_y
         if spread_out + about_to_spread_out >= to_divide {
             let last_slice_size = to_divide - spread_out;
-            let slice_y = last_slice_size.div_ceil(flat_bottom.len() as u32);
-            let left_over = slice_y * (flat_bottom.len() as u32) - last_slice_size;
+            let slice_y = last_slice_size.div_ceil(flat.len());
+            let left_over = slice_y * flat.len() - last_slice_size;
 
-            let final_height = flat_bottom_height - slice_y;
+            let final_height = flat.height - slice_y;
             break (final_height, left_over);
         }
 
-        // spread the bandwidth
         spread_out += about_to_spread_out;
-        flat_bottom.push(next);
-
-        // take out those at capacity
-        remove_any_at_limit(&mut flat_bottom, next_height);
-        flat_bottom_height = next_height.max(flat_bottom[0].allocated);
-        flat_bottom_limit = flat_bottom
-            .iter()
-            .map(|info| info.best_limit())
-            .min()
-            .expect("flat_bottom is never empty");
+        flat.push(next);
+        flat.remove_any_at_limit(next_height);
     };
 
-    for item in &mut flat_bottom {
-        item.allocated = final_height;
-    }
-
+    flat.apply(final_height);
     left_over
 }
 
-fn remove_any_at_limit(flat_bottom: &mut Vec<&mut AllocationInfo>, curr_height: Bandwidth) {
-    while let Some((idx, _)) = flat_bottom
-        .iter()
-        .enumerate()
-        .find(|(_, info)| info.best_limit() == curr_height)
-    {
-        let at_limit = flat_bottom.remove(idx);
-        at_limit.allocated = curr_height;
-        eprintln!("removing: {}", curr_height);
+fn divide_within_flat(
+    flat: &mut FlatBottom<'_>,
+    spread_out: &mut u32,
+    to_divide: u32,
+) -> (u32, u32) {
+    while flat.len() > 1 {
+        let ideal_slice_size = to_divide - *spread_out;
+        let ideal_slice = ideal_slice_size / flat.len();
+        let next_height = flat.height + ideal_slice;
+
+        if next_height > flat.limit {
+            let slice_y = flat.limit - flat.height;
+            let about_to_spread_out = slice_y * flat.len();
+            *spread_out += about_to_spread_out;
+            flat.remove_any_at_limit(flat.limit);
+        } else {
+            break;
+        }
     }
+    let ideal_slice_size = to_divide - *spread_out;
+    let ideal_slice_y = ideal_slice_size / flat.len();
+    let final_height = (flat.height + ideal_slice_y).min(flat.limit);
+    let slice_y = final_height - flat.height;
+    let about_to_spread_out = slice_y * flat.len();
+    let left_over = to_divide - *spread_out - about_to_spread_out;
+
+    (final_height, left_over)
 }
 
 #[cfg(test)]
