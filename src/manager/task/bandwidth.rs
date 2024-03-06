@@ -10,10 +10,11 @@ use tokio::sync::mpsc;
 use tokio::task::AbortHandle;
 use tokio::time;
 
-mod divide;
 mod allocation;
+mod divide;
 
 use crate::manager::stream::StreamConfig;
+use crate::manager::task::bandwidth::allocation::Limit;
 use crate::network::BandwidthAllowed;
 use crate::{BandwidthLimit, IdBandwidthCallback, RangeCallback, StreamHandle, StreamId};
 
@@ -99,15 +100,11 @@ impl<B: IdBandwidthCallback> IdBandwidthCallback for WrappedCallback<B> {
     }
 }
 
-
 pub(crate) struct Controller {
     rx: mpsc::Receiver<Update>,
     tx: mpsc::Sender<Update>,
     bandwidth_lim: BandwidthAllowed,
     next_sweep: Instant,
-    // we where using this but no longer need it
-    // might still be up for graps though
-    leftover: allocation::Bandwidth,
     allocated_by_prio: BTreeMap<Priority, allocation::Allocations>,
 }
 
@@ -128,7 +125,7 @@ impl Controller {
         (external_update, next_sweep).race().await
     }
 
-    pub(super) fn handle_update<R: RangeCallback>(
+    pub(super) async fn handle_update<R: RangeCallback>(
         &mut self,
         handles: &mut HashMap<StreamId, (AbortHandle, StreamHandle<R>)>,
         update: Update,
@@ -138,8 +135,10 @@ impl Controller {
             Update::NewPriority { id, priority } => todo!(),
             Update::NewStreamLimit { id, bandwidth } => todo!(),
             Update::NewGlobalLimit { bandwidth } => todo!(),
-            Update::Scheduled => todo!(),
-            Update::Drop(stream_id) => todo!(),
+            Update::Scheduled => todo!(), // should also check if any of the
+            // streams has been dropped and
+            // unreported
+            Update::Drop(stream_id) => self.remove(stream_id, handles).await,
         }
     }
 
@@ -163,18 +162,31 @@ impl Controller {
                 tx,
                 bandwidth_lim,
                 next_sweep: Instant::now() + Duration::MAX,
-                leftover: 0,
                 allocated_by_prio: BTreeMap::new(),
             },
             bandwidth,
         )
     }
 
-    pub(crate) fn remove(&self, id: StreamId) {
-        todo!()
+    /* TODO: Similar thing for paused streams unpause would then send
+     * trigger stealing taking back the bandwidth <03-03-24, dvdsk> */
+    pub(crate) async fn remove<R: RangeCallback>(
+        &mut self,
+        id: StreamId,
+        handles: &mut HashMap<StreamId, (AbortHandle, StreamHandle<R>)>,
+    ) {
+        let mut info = None;
+        for list in self.allocated_by_prio.values_mut() {
+            info = info.or(list.remove(id));
+        }
+
+        let Some(info) = info else { return };
+
+        self.divide_known_bandwidth(info.allocated);
+        /* TODO: needs to skip paused streams <03-03-24, dvdsk> */
+        self.apply_new_limits(handles).await;
     }
 
-    // Todo add guard that unregisters if registration is dropped
     #[must_use]
     pub(crate) async fn register<R: RangeCallback>(
         &mut self,
@@ -201,6 +213,7 @@ impl Controller {
             id,
             curr_io_limit: allocated_bw,
             allocated: allocated_bw,
+            upstream_limit: Limit::Unknown,
             target: config.bandwidth.clone(),
             stream_still_exists: guard.stream_still_exists.clone(),
         };
@@ -253,10 +266,13 @@ impl Controller {
         // never surpassing the previous value
         let mut still_needed = limit;
         for p in ((Priority::lowest() as usize)..(priority as usize)).map(Priority::from_usize) {
-            let allocced = self.total_allocated_at(p);
-            if allocced < still_needed {
-                let leftover = self.redivide(p, still_needed - allocced);
-                self.leftover += leftover;
+            let Some(list) = self.allocated_by_prio.get_mut(&p) else {
+                continue;
+            };
+
+            let allocced = list.total_allocated();
+            if allocced > still_needed {
+                Self::redivide(list, still_needed);
                 return limit;
             } else {
                 let got = self.take_all(p);
@@ -268,17 +284,6 @@ impl Controller {
         // starting with the biggest stopping once done
         still_needed -= self.redivide_fair(priority, still_needed);
         limit - still_needed
-    }
-
-    fn total_allocated_at(&self, priority: Priority) -> u32 {
-        self.allocated_by_prio
-            .get(&priority)
-            .map(|list| {
-                list.into_iter()
-                    .map(|allocation::AllocationInfo { allocated, .. }| allocated)
-                    .sum()
-            })
-            .unwrap_or(0)
     }
 
     fn n_streams(&self) -> usize {
@@ -299,5 +304,26 @@ impl Controller {
             info.allocated = 0;
         }
         freed
+    }
+
+    fn divide_known_bandwidth(&mut self, mut to_divide: u32) {
+        // spend first at highest prio
+        for list in self.allocated_by_prio.values_mut().rev() {
+            let guessed_limit = list
+                .iter_mut()
+                .filter(|info| info.upstream_limit.have_guess());
+            let left_over = divide::divide_new_bw(guessed_limit, to_divide);
+            to_divide = left_over;
+            if to_divide == 0 {
+                return;
+            }
+
+            let unknown_limit = list.iter_mut().filter(|info| info.upstream_limit.unknown());
+            let left_over = divide::divide_new_bw(unknown_limit, to_divide);
+            to_divide = left_over;
+            if to_divide == 0 {
+                return;
+            }
+        }
     }
 }

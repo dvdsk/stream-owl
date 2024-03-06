@@ -147,16 +147,19 @@ pub(super) async fn run<L: IdLogCallback, B: IdBandwidthCallback, R: IdRangeCall
         let bandwidth = state.bandwidth.wait_for_update().map(Res::Bandwidth);
 
         match (new_cmd, stream_err, bandwidth).race().await {
-            Res::Bandwidth(update) => state
-                .bandwidth
-                .handle_update(&mut state.stream_handles, update),
+            Res::Bandwidth(update) => {
+                state
+                    .bandwidth
+                    .handle_update(&mut state.stream_handles, update)
+                    .await
+            }
             Res::NewCmd(AddStream {
                 handle_tx,
                 config,
                 url,
             }) => state.add_stream(handle_tx, config, url).await.unwrap(),
             Res::NewCmd(CancelStream(id)) => {
-                state.bandwidth.remove(id);
+                state.bandwidth.remove(id, &mut state.stream_handles).await;
                 if let Some((abort, _)) = state.stream_handles.remove(&id) {
                     abort.abort();
                 }
