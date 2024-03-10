@@ -46,6 +46,10 @@ impl AllocationInfo {
         self.allocated
     }
 
+    pub(crate) fn until_limit(&self) -> Bandwidth {
+        self.best_limit() - self.allocated
+    }
+
     pub(crate) fn best_limit(&self) -> Bandwidth {
         let factor = 2;
         match self.upstream_limit {
@@ -161,6 +165,17 @@ impl Allocations {
     /// at the end of the iteration the order is restored
     pub(crate) fn iter_mut(&mut self) -> IterMut {
         IterMut(self.0.iter_mut())
+    }
+
+    pub(crate) fn iter(&mut self) -> std::slice::Iter<AllocationInfo> {
+        self.0.iter()
+    }
+
+    pub(crate) fn get_mut(&mut self, id: StreamId) -> Option<&mut AllocationInfo> {
+        self.0.iter_mut().find(|info| info.id == id)
+    }
+    pub(crate) fn get(&self, id: StreamId) -> Option<&AllocationInfo> {
+        self.0.iter().find(|info| info.id == id)
     }
 }
 

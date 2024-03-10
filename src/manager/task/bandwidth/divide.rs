@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+use std::iter;
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
@@ -428,4 +430,151 @@ mod tests {
             do_test([(0, g(5)), (10, u()), (20, g(25))], 50, [5, 50, 25], 0)
         }
     }
+
+    mod spread_perbutation {
+        use crate::manager::task::bandwidth::BandwidthInfo;
+
+        use super::*;
+
+        fn alloc_info(((_, growable), id): ((f32, Bandwidth), StreamId)) -> AllocationInfo {
+            AllocationInfo {
+                id,
+                target: crate::network::BandwidthAllowed::UnLimited,
+                curr_io_limit: 100,
+                allocated: 100,
+                stream_still_exists: Arc::new(AtomicBool::new(true)),
+                upstream_limit: allocation::Limit::Guess(100 + growable),
+            }
+        }
+
+        fn bw_info((streadyness, _): (f32, Bandwidth)) -> BandwidthInfo {
+            BandwidthInfo {
+                curr: 100,
+                steadyness: streadyness,
+            }
+        }
+
+        fn do_test<const N: usize>(
+            existing_bw: [(f32, Bandwidth); N],
+            perbutation: Bandwidth,
+            resulting_bw: [Bandwidth; N],
+            left_over: Bandwidth,
+        ) {
+            let mut list = Allocations::default();
+            let ids: Vec<_> = existing_bw.iter().map(|_| StreamId::new()).collect();
+
+            (&mut list).extend(
+                existing_bw
+                    .clone()
+                    .into_iter()
+                    .zip(ids.iter().cloned())
+                    .map(alloc_info),
+            );
+            let mut allocated_by_prio = [(Priority::highest(), list)].into_iter().collect();
+            let increasing_steadyness: Vec<_> = ids
+                .clone()
+                .into_iter()
+                .zip(existing_bw.clone().into_iter().map(bw_info))
+                .collect();
+            let increasing_steadyness_borrow: Vec<_> = increasing_steadyness
+                .iter()
+                .map(|(id, info)| (id, info))
+                .collect();
+
+            // is sorted
+            increasing_steadyness_borrow.iter().fold(0, |last, curr| {
+                assert!(curr.1.curr >= last);
+                curr.1.curr
+            });
+
+            let res = spread_perbutation(
+                perbutation,
+                increasing_steadyness_borrow,
+                &mut allocated_by_prio,
+            );
+            let list = allocated_by_prio.remove(&Priority::highest()).unwrap();
+            let extra: Vec<_> = ids
+                .into_iter()
+                .map(|id| list.get(id).unwrap().allocated - 100)
+                .collect();
+            assert_eq!(extra.as_slice(), &resulting_bw);
+            assert_eq!(res, left_over);
+            assert_eq!(
+                existing_bw.iter().map(|(_, bw)| bw).sum::<u32>() + perbutation,
+                resulting_bw.iter().sum::<u32>() + left_over,
+                "sum of existing allocations + new != new allocations + left over"
+            );
+        }
+
+        #[test]
+        fn all_super_steady() {
+            do_test([(0.99, 40), (0.99, 10), (0.95, 30)], 9, [44, 14, 32], 0)
+        }
+
+        #[test]
+        fn high_with_little_bw_low_with_lots() {
+            do_test([(0.99, 5), (0.99, 10), (0.85, 40)], 20, [5, 10, 5], 0)
+        }
+    }
+}
+
+pub(crate) fn spread_perbutation(
+    mut perbutation: u32,
+    decreasing_steadyness: Vec<(&StreamId, &super::BandwidthInfo)>,
+    allocated_by_prio: &mut BTreeMap<Priority, Allocations>,
+) -> Bandwidth {
+    let mut decreasing_steadyness = decreasing_steadyness.into_iter();
+    let best = decreasing_steadyness.next().unwrap();
+
+    let shares: Vec<_> = iter::once((best.0, 1.0))
+        .chain(decreasing_steadyness.map(|(id, bandwidth)| {
+            let dist_to_best = dbg!(best.1.steadyness) - dbg!(bandwidth.steadyness);
+            let mul = dbg!(dist_to_best) * 6.0;
+            let share = 1.0 - mul;
+            (id, share)
+        }))
+        .collect();
+    let mut total: f32 = shares.iter().map(|(_, share)| share).sum();
+    dbg!(&shares, total);
+
+    for (id, share) in shares {
+        let alloc = get_alloc_by_id(*id, allocated_by_prio);
+
+        let normalized_share = dbg!(share) / dbg!(total);
+        let bw_share = (perbutation as f32 * dbg!(normalized_share)) as u32;
+        let final_share = dbg!(bw_share).min(alloc.until_limit());
+        dbg!(final_share);
+
+        alloc.allocated += final_share;
+
+        // add the part of our share we could not add (because of alloc limit)
+        let left_over = (bw_share - final_share) as f32;
+        let left_over = left_over / (bw_share as f32);
+        dbg!(left_over, share);
+        total -= left_over;
+    }
+
+    perbutation
+}
+
+// fn max_steadyness(increasing_steadyness: Vec<(&StreamId, &super::BandwidthInfo)>) -> f32 {
+//     let min = match increasing_steadyness.len() {
+//         1 => 1.0,
+//         2 => 0.9,
+//         3 => 0.85,
+//         4 => 0.82,
+//
+//     }
+// }
+
+fn get_alloc_by_id(
+    id: StreamId,
+    allocated_by_prio: &mut BTreeMap<Priority, Allocations>,
+) -> &mut AllocationInfo {
+    allocated_by_prio
+        .values_mut()
+        .find(|list| list.get(id).is_some())
+        .expect("if an allocation in bandwidth_by_id it must be in here too")
+        .get_mut(id)
+        .expect("see prev")
 }

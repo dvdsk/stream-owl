@@ -104,6 +104,21 @@ pub(crate) enum BandwidthAllowed {
     #[default]
     UnLimited,
 }
+impl BandwidthAllowed {
+    pub(crate) fn could_increase(&self, curr_bw: u32) -> bool {
+        match self {
+            BandwidthAllowed::Limited(limit) => limit.0.get() < curr_bw,
+            BandwidthAllowed::UnLimited => true,
+        }
+    }
+
+    pub(crate) fn unwrap(&self) -> u32 {
+        match self {
+            BandwidthAllowed::Limited(limit) => limit.0.get(),
+            BandwidthAllowed::UnLimited => u32::MAX,
+        }
+    }
+}
 
 #[derive(Clone)]
 pub(crate) struct BandwidthLim {

@@ -1,5 +1,5 @@
 use futures::FutureExt;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::num::NonZeroU32;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -12,11 +12,14 @@ use tokio::time;
 
 mod allocation;
 mod divide;
+mod update;
 
 use crate::manager::stream::StreamConfig;
 use crate::manager::task::bandwidth::allocation::Limit;
 use crate::network::BandwidthAllowed;
 use crate::{BandwidthLimit, IdBandwidthCallback, RangeCallback, StreamHandle, StreamId};
+
+use self::allocation::Bandwidth;
 
 #[derive(Debug, Copy, Clone, Default, PartialEq, Eq, Hash)]
 #[repr(usize)]
@@ -29,6 +32,10 @@ pub enum Priority {
 impl Priority {
     fn lowest() -> Self {
         Self::Low
+    }
+
+    fn highest() -> Self {
+        Self::High
     }
 
     // needed as long as std::iter::Step is nightly
@@ -100,11 +107,37 @@ impl<B: IdBandwidthCallback> IdBandwidthCallback for WrappedCallback<B> {
     }
 }
 
+struct BandwidthInfo {
+    // last known bandwidth
+    curr: Bandwidth,
+    // if below limit set to 0
+    // each time we are at the limit
+    // we set this to itself *0.9 + 0.1 * the distance in % to the limit
+    steadyness: f32,
+}
+
+impl BandwidthInfo {
+    fn curr(&self) -> Bandwidth {
+        self.curr
+    }
+    fn update(&mut self, now_at: Bandwidth, limit_was: Bandwidth) {
+        self.curr = now_at;
+
+        let distance = now_at as f32 / limit_was as f32;
+        let distance = distance.max(1.0);
+        self.steadyness = self.steadyness * 0.9 + distance * 0.1
+    }
+}
+
 pub(crate) struct Controller {
     rx: mpsc::Receiver<Update>,
     tx: mpsc::Sender<Update>,
     bandwidth_lim: BandwidthAllowed,
+    previous_sweeps_bw: VecDeque<Bandwidth>,
+    previous_total_bw_perbutation: Option<Bandwidth>,
     next_sweep: Instant,
+    next_check_available_bw: bool,
+    bandwidth_by_id: HashMap<StreamId, BandwidthInfo>,
     allocated_by_prio: BTreeMap<Priority, allocation::Allocations>,
 }
 
@@ -131,13 +164,14 @@ impl Controller {
         update: Update,
     ) {
         match update {
-            Update::StreamUpdate { id, bandwidth } => todo!(),
+            Update::StreamUpdate { id, bandwidth } => self.bandwidth_update(id, bandwidth),
             Update::NewPriority { id, priority } => todo!(),
             Update::NewStreamLimit { id, bandwidth } => todo!(),
             Update::NewGlobalLimit { bandwidth } => todo!(),
-            Update::Scheduled => todo!(), // should also check if any of the
-            // streams has been dropped and
-            // unreported
+            Update::Scheduled => {
+                self.remove_allocs_that_failed_to_do_so(handles).await;
+                self.sweep(handles).await;
+            }
             Update::Drop(stream_id) => self.remove(stream_id, handles).await,
         }
     }
@@ -163,6 +197,10 @@ impl Controller {
                 bandwidth_lim,
                 next_sweep: Instant::now() + Duration::MAX,
                 allocated_by_prio: BTreeMap::new(),
+                previous_sweeps_bw: VecDeque::new(),
+                bandwidth_by_id: HashMap::new(),
+                next_check_available_bw: true,
+                previous_total_bw_perbutation: None,
             },
             bandwidth,
         )
@@ -180,9 +218,11 @@ impl Controller {
             info = info.or(list.remove(id));
         }
 
+        self.bandwidth_by_id.remove(&id);
+
         let Some(info) = info else { return };
 
-        self.divide_known_bandwidth(info.allocated);
+        self.divide_new_bandwidth(info.allocated);
         /* TODO: needs to skip paused streams <03-03-24, dvdsk> */
         self.apply_new_limits(handles).await;
     }
@@ -196,10 +236,10 @@ impl Controller {
     ) -> (StreamConfig, allocation::AllocationGuard) {
         use BandwidthAllowed as B;
         let init_limit = match config.bandwidth {
-            B::UnLimited => 10_000,
-            B::Limited(limit) => limit.0.get().min(10_000),
+            B::UnLimited => Bandwidth::MAX, // will be made fair in remove_bw_at_prio
+            B::Limited(limit) => limit.0.get(),
         };
-        let allocated_bw = self.allocate_bw_limited(config.priority, init_limit);
+        let allocated_bw = self.remove_bw_at_and_below(config.priority, init_limit);
         config.bandwidth = BandwidthAllowed::Limited(BandwidthLimit(
             NonZeroU32::new(allocated_bw).expect("allocated_bandwidth should never be zero"),
         ));
@@ -254,7 +294,7 @@ impl Controller {
         }
     }
 
-    fn allocate_bw_limited(&mut self, priority: Priority, limit: u32) -> u32 {
+    fn remove_bw_at_and_below(&mut self, priority: Priority, limit: u32) -> u32 {
         // if there is only one other stream or no stream we have no idea of the total
         // bandwidth available
         if self.n_streams() < 2 {
@@ -306,7 +346,7 @@ impl Controller {
         freed
     }
 
-    fn divide_known_bandwidth(&mut self, mut to_divide: u32) {
+    fn divide_new_bandwidth(&mut self, mut to_divide: u32) {
         // spend first at highest prio
         for list in self.allocated_by_prio.values_mut().rev() {
             let guessed_limit = list
