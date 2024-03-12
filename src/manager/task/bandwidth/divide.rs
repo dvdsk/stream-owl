@@ -499,62 +499,111 @@ mod tests {
                 .collect();
             assert_eq!(extra.as_slice(), &resulting_bw);
             assert_eq!(res, left_over);
-            assert_eq!(
-                existing_bw.iter().map(|(_, bw)| bw).sum::<u32>() + perbutation,
-                resulting_bw.iter().sum::<u32>() + left_over,
-                "sum of existing allocations + new != new allocations + left over"
-            );
+            assert_eq!(perbutation, extra.iter().sum::<Bandwidth>() + left_over);
         }
 
         #[test]
         fn all_super_steady() {
-            do_test([(0.99, 40), (0.99, 10), (0.95, 30)], 9, [44, 14, 32], 0)
+            do_test([(0.99, 40), (0.99, 10), (0.90, 30)], 9, [3, 4, 2], 0)
         }
 
         #[test]
         fn high_with_little_bw_low_with_lots() {
             do_test([(0.99, 5), (0.99, 10), (0.85, 40)], 20, [5, 10, 5], 0)
         }
+
+        #[test]
+        fn long_list() {
+            do_test(
+                [
+                    (0.99, 5),
+                    (0.98, 10),
+                    (0.95, 40),
+                    (0.93, 5),
+                    (0.91, 10),
+                    (0.90, 40),
+                    (0.85, 40),
+                    (0.83, 5),
+                    (0.81, 10),
+                    (0.80, 40),
+                ],
+                20,
+                [4, 4, 3, 3, 3, 3, 0, 0, 0, 0],
+                0,
+            )
+        }
+
+        #[test]
+        fn not_enough_room() {
+            do_test(
+                [
+                    (0.99, 1),
+                    (0.98, 1),
+                    (0.95, 1),
+                    (0.93, 1),
+                    (0.91, 1),
+                    (0.90, 1),
+                    (0.85, 1),
+                    (0.83, 1),
+                    (0.81, 1),
+                    (0.80, 1),
+                ],
+                20,
+                [1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
+                0,
+            )
+        }
     }
 }
 
 pub(crate) fn spread_perbutation(
-    mut perbutation: u32,
+    perbutation: u32,
     decreasing_steadyness: Vec<(&StreamId, &super::BandwidthInfo)>,
     allocated_by_prio: &mut BTreeMap<Priority, Allocations>,
 ) -> Bandwidth {
     let mut decreasing_steadyness = decreasing_steadyness.into_iter();
     let best = decreasing_steadyness.next().unwrap();
+    let spread_factor = 6.0;
 
     let shares: Vec<_> = iter::once((best.0, 1.0))
         .chain(decreasing_steadyness.map(|(id, bandwidth)| {
             let dist_to_best = dbg!(best.1.steadyness) - dbg!(bandwidth.steadyness);
-            let mul = dbg!(dist_to_best) * 6.0;
+            let mul = dbg!(dist_to_best) * spread_factor;
             let share = 1.0 - mul;
             (id, share)
         }))
         .collect();
-    let mut total: f32 = shares.iter().map(|(_, share)| share).sum();
+    let total: f32 = shares.iter().map(|(_, share)| share).sum();
     dbg!(&shares, total);
 
+    let mut leftover = perbutation;
+    let mut total_percentage_left = 1.0;
+    let mut unused_percentage = 0.0;
     for (id, share) in shares {
         let alloc = get_alloc_by_id(*id, allocated_by_prio);
 
-        let normalized_share = dbg!(share) / dbg!(total);
-        let bw_share = (perbutation as f32 * dbg!(normalized_share)) as u32;
-        let final_share = dbg!(bw_share).min(alloc.until_limit());
-        dbg!(final_share);
+        let allocated_percentage = share / total;
+        let percentage_of_leftover = allocated_percentage / total_percentage_left;
+        let percentage_of_unused = percentage_of_leftover * unused_percentage;
+        unused_percentage -= percentage_of_unused;
+        // rescale left over unused
 
+        let share_percentage = allocated_percentage + percentage_of_unused;
+        dbg!(share_percentage, allocated_percentage, percentage_of_unused);
+        let share_bw = perbutation as f32 * share_percentage;
+        let final_share = (share_bw as u32).min(alloc.until_limit());
+
+        dbg!(final_share, share_bw, share_percentage);
         alloc.allocated += final_share;
+        leftover -= final_share;
 
-        // add the part of our share we could not add (because of alloc limit)
-        let left_over = (bw_share - final_share) as f32;
-        let left_over = left_over / (bw_share as f32);
-        dbg!(left_over, share);
-        total -= left_over;
+        let new_unused = share_bw - final_share as f32;
+        let new_unused_percentage = new_unused / perbutation as f32;
+        unused_percentage += new_unused_percentage;
+        total_percentage_left -= allocated_percentage;
     }
 
-    perbutation
+    leftover
 }
 
 // fn max_steadyness(increasing_steadyness: Vec<(&StreamId, &super::BandwidthInfo)>) -> f32 {
