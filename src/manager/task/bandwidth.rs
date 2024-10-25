@@ -107,6 +107,7 @@ impl<B: IdBandwidthCallback> IdBandwidthCallback for WrappedCallback<B> {
     }
 }
 
+#[derive(Debug)]
 struct BandwidthInfo {
     // last known bandwidth
     curr: Bandwidth,

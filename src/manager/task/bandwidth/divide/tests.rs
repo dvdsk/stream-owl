@@ -184,6 +184,7 @@ mod divide_new {
 
 mod spread_perbutation {
     use crate::manager::task::bandwidth::BandwidthInfo;
+    use crate::BandwidthLimit;
 
     use super::*;
 
@@ -205,6 +206,7 @@ mod spread_perbutation {
         }
     }
 
+    // existing_bw is: (steadyness, bandwidth_limit)
     fn do_test<const N: usize>(
         existing_bw: [(f32, Bandwidth); N],
         perbutation: Bandwidth,
@@ -238,20 +240,19 @@ mod spread_perbutation {
             curr.1.curr
         });
 
-        let res =
-            spread_perbutation(perbutation, increasing_steadyness_borrow, &mut allocations);
+        let res = spread_perbutation(perbutation, increasing_steadyness_borrow, &mut allocations);
         let extra: Vec<_> = ids
             .into_iter()
             .map(|id| allocations.get(&id).unwrap().allocated - 100)
             .collect();
         assert_eq!(extra.as_slice(), &resulting_bw);
-        assert_eq!(res, left_over);
         assert_eq!(perbutation, extra.iter().sum::<Bandwidth>() + left_over);
+        assert_eq!(res, left_over);
     }
 
     #[test]
     fn all_super_steady() {
-        do_test([(0.99, 40), (0.99, 10), (0.90, 30)], 9, [3, 4, 2], 0)
+        do_test([(0.99, 40), (0.99, 10), (0.90, 30)], 9, [4, 4, 1], 0)
     }
 
     #[test]
@@ -297,8 +298,7 @@ mod spread_perbutation {
             ],
             20,
             [1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
-            0,
+            10,
         )
     }
 }
-

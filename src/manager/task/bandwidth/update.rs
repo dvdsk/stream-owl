@@ -102,7 +102,7 @@ impl Controller {
                 .unwrap_or(std::cmp::Ordering::Equal)
         });
 
-        let leftover =
+        let left_over =
             divide::spread_perbutation(perbutation, increasing_steadyness, &mut self.allocations);
 
         // want each stream to get some bit of extra bandwidth, how much
