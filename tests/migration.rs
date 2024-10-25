@@ -1,15 +1,17 @@
+#![recursion_limit = "256"]
+
 use std::io::{Read, Seek};
 use std::num::NonZeroUsize;
 use std::sync::Arc;
 
-use stream_owl::testing::{Action, ConnControls, Event, ServerControls};
-use stream_owl::{testing, StreamBuilder};
-use testing::TestEnded;
+use stream_owl::StreamBuilder;
+use stream_owl_test_support::{gen_file_path, pausable_server, setup_reader_test};
+use stream_owl_test_support::{Action, ConnControls, Event, ServerControls, TestEnded};
 use tokio::sync::Notify;
 
 #[test]
 fn migrate_to_disk() {
-    let test_dl_path = stream_owl::testing::gen_file_path();
+    let test_dl_path = gen_file_path();
     let configure = |b: StreamBuilder<false, _, _, _>| {
         b.with_prefetch(0)
             .to_unlimited_mem()
@@ -27,8 +29,8 @@ fn migrate_to_disk() {
     let (runtime_thread, mut handle) = {
         let server_controls = server_controls.clone();
         let conn_controls = conn_controls.clone();
-        testing::setup_reader_test(&test_done, test_file_size, configure, move |size| {
-            testing::pausable_server(size, server_controls, conn_controls)
+        setup_reader_test(&test_done, test_file_size, configure, move |size| {
+            pausable_server(size, server_controls, conn_controls)
         })
     };
 
@@ -58,7 +60,7 @@ fn migrate_to_disk() {
     // migration has too
     let downloaded = std::fs::read(test_dl_path).unwrap();
     let correct = {
-        let mut test_data = testing::test_data(3000);
+        let mut test_data = stream_owl_test_support::test_data(3000);
         test_data[0..1000].copy_from_slice(&[0; 1000]);
         test_data
     };
@@ -105,8 +107,8 @@ fn unlimited_migrated_to_lim_store_streams_again() {
     let (runtime_thread, mut handle) = {
         let server_controls = server_controls.clone();
         let conn_controls = conn_controls.clone();
-        testing::setup_reader_test(&test_done, test_file_size, configure, move |size| {
-            testing::pausable_server(size, server_controls, conn_controls)
+        setup_reader_test(&test_done, test_file_size, configure, move |size| {
+            pausable_server(size, server_controls, conn_controls)
         })
     };
 
@@ -132,7 +134,7 @@ fn unlimited_migrated_to_lim_store_streams_again() {
 
 #[test]
 fn file_is_deleted_when_migrating_from_disk_store() {
-    let test_dl_path = stream_owl::testing::gen_file_path();
+    let test_dl_path = gen_file_path();
     let configure = {
         let path = test_dl_path.clone();
         move |b: StreamBuilder<false, _, _, _>| b.with_prefetch(0).to_disk(path)
@@ -146,8 +148,8 @@ fn file_is_deleted_when_migrating_from_disk_store() {
     let (runtime_thread, mut handle) = {
         let server_controls = server_controls.clone();
         let conn_controls = conn_controls.clone();
-        testing::setup_reader_test(&test_done, test_file_size, configure, move |size| {
-            testing::pausable_server(size, server_controls, conn_controls)
+        setup_reader_test(&test_done, test_file_size, configure, move |size| {
+            pausable_server(size, server_controls, conn_controls)
         })
     };
 

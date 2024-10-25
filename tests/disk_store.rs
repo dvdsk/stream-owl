@@ -4,15 +4,15 @@ use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 
-use stream_owl::testing::{test_data_range, Action, Event, ServerControls, TestEnded};
-use stream_owl::{testing, StreamBuilder, StreamCanceld};
-use testing::ConnControls;
+use stream_owl::{StreamBuilder, StreamCanceld};
+use stream_owl_test_support::{gen_file_path, pausable_server, setup_reader_test, test_data_range};
+use stream_owl_test_support::{Action, ConnControls, Event, ServerControls, TestEnded};
 use tokio::sync::Notify;
 use tracing::info;
 
 #[test]
 fn after_seeking_forward_download_still_completes() {
-    let test_dl_path = stream_owl::testing::gen_file_path();
+    let test_dl_path = gen_file_path();
     let configure = {
         let path = test_dl_path.clone();
         move |b: StreamBuilder<false, _, _, _>| b.with_prefetch(0).to_disk(path).start_paused(true)
@@ -26,8 +26,8 @@ fn after_seeking_forward_download_still_completes() {
     let (runtime_thread, mut handle) = {
         let server_controls = server_controls.clone();
         let conn_controls = conn_controls.clone();
-        testing::setup_reader_test(&test_done, test_file_size, configure, move |size| {
-            testing::pausable_server(size, server_controls, conn_controls)
+        setup_reader_test(&test_done, test_file_size, configure, move |size| {
+            pausable_server(size, server_controls, conn_controls)
         })
     };
 
@@ -39,18 +39,18 @@ fn after_seeking_forward_download_still_completes() {
 
     let test_ended = runtime_thread.join().unwrap();
     match test_ended {
-        testing::TestEnded::StreamReturned(Ok(StreamCanceld)) => (),
+        stream_owl_test_support::TestEnded::StreamReturned(Ok(StreamCanceld)) => (),
         other => panic!("runtime should return with StreamReturned, it returned with {other:?}"),
     }
 
     std::mem::drop(handle); // triggers flush, could also call flush on handle
     let downloaded = std::fs::read(test_dl_path).unwrap();
-    assert!(downloaded == testing::test_data(test_file_size as u32));
+    assert!(downloaded == stream_owl_test_support::test_data(test_file_size as u32));
 }
 
 #[test]
 fn resumes() {
-    let test_dl_path = stream_owl::testing::gen_file_path();
+    let test_dl_path = gen_file_path();
     let configure = {
         let path = test_dl_path.clone();
         move |b: StreamBuilder<false, _, _, _>| {
@@ -73,8 +73,8 @@ fn resumes() {
         let (runtime_thread, mut handle) = {
             let server_controls = server_controls.clone();
             let conn_controls = conn_controls.clone();
-            testing::setup_reader_test(&test_done, test_file_size, configure.clone(), move |size| {
-                testing::pausable_server(size, server_controls, conn_controls)
+            setup_reader_test(&test_done, test_file_size, configure.clone(), move |size| {
+                pausable_server(size, server_controls, conn_controls)
             })
         };
 
@@ -104,8 +104,8 @@ fn resumes() {
     let (runtime_thread, mut handle) = {
         let server_controls = server_controls.clone();
         let conn_controls = conn_controls.clone();
-        testing::setup_reader_test(&test_done, test_file_size, configure, move |size| {
-            testing::pausable_server(size, server_controls, conn_controls)
+        setup_reader_test(&test_done, test_file_size, configure, move |size| {
+            pausable_server(size, server_controls, conn_controls)
         })
     };
 
@@ -116,7 +116,7 @@ fn resumes() {
     let mut buf = vec![0u8; 3_000];
     reader.read_exact(&mut buf).unwrap();
 
-    assert_eq!(buf, testing::test_data_range(2_000..5_000));
+    assert_eq!(buf, stream_owl_test_support::test_data_range(2_000..5_000));
     test_done.notify_one();
 
     let test_ended = runtime_thread.join().unwrap();

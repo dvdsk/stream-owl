@@ -12,11 +12,6 @@ mod target;
 
 mod util;
 
-/// internal use only! in time move this to tests/common/common.rs
-/// for now RA needs it here and we need RA
-#[doc(hidden)]
-pub mod testing;
-
 pub use stream::{RangeUpdate, StreamBuilder};
 
 pub use stream::Error as StreamError;

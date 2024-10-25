@@ -8,26 +8,24 @@ use super::{divide, BandwidthInfo, Controller, Priority};
 use crate::{RangeCallback, StreamHandle, StreamId};
 
 impl Controller {
-    pub(super) fn bandwidth_update(&mut self, id: StreamId, new: usize) {
-        if let Some(bandwidth) = self.bandwidth_by_id.get_mut(&id) {
-            /* TODO: kinda inefficient since this runs a lot more then
+    pub(super) fn bandwidth_update(&mut self, stream: StreamId, new: usize) {
+        if let Some(bandwidth) = self.bandwidth_by_id.get_mut(&stream) {
+            /* TODO: kinda inefficient since this runs a lot more than
              * adding and removing streams <08-03-24> */
             let limit_was = self
-                .allocated_by_prio
-                .iter()
-                .flat_map(|(_, list)| list)
-                .find(|info| info.id == id)
+                .allocations
+                .get(&stream)
                 .expect("if its in bandwidth_by_id it must be in a list")
                 .curr_io_limit;
             bandwidth.update(new as u32, limit_was);
         } else {
             let info = BandwidthInfo {
                 curr: new as u32,
-                // init low as a new stream is expected to rapidly change
+                // Initially low as a new stream is expected to rapidly change
                 // bandwidth
                 steadyness: 0.5,
             };
-            self.bandwidth_by_id.insert(id, info);
+            self.bandwidth_by_id.insert(stream, info);
         }
     }
 
@@ -97,8 +95,6 @@ impl Controller {
         let perbutation = self.optimal_total_bw_perbutation();
         self.previous_total_bw_perbutation = Some(perbutation);
 
-        // TODO: feels a bit inefficient, maybe not collect and store but keep
-        // an up to date list? <dvdsk noreply@davidsk.dev>
         let mut increasing_steadyness: Vec<_> = self.bandwidth_by_id.iter().collect();
         increasing_steadyness.sort_unstable_by(|a, b| {
             b.1.steadyness
@@ -106,14 +102,11 @@ impl Controller {
                 .unwrap_or(std::cmp::Ordering::Equal)
         });
 
-        let leftover = divide::spread_perbutation(
-            perbutation,
-            increasing_steadyness,
-            &mut self.allocated_by_prio,
-        );
+        let leftover =
+            divide::spread_perbutation(perbutation, increasing_steadyness, &mut self.allocations);
 
         // want each stream to get some bit of extra bandwidth, how much
-        // is determined by its growability and streadyness. If its more
+        // is determined by its growability and steadyness. If its more
         // steady it gets more allocated
 
         // total_steadyness
@@ -136,11 +129,11 @@ impl Controller {
         handles: &mut HashMap<StreamId, (AbortHandle, StreamHandle<R>)>,
     ) {
         let should_still_be_dropped: Vec<_> = self
-            .allocated_by_prio
+            .allocations
             .iter()
-            .flat_map(|(_, list)| list)
-            .filter(|info| !info.stream_still_exists.load(Ordering::Relaxed))
-            .map(|info| info.id)
+            .filter(|(_, info)| !info.stream_still_exists.load(Ordering::Relaxed))
+            .map(|(id, _)| id)
+            .copied()
             .collect();
 
         for stream_id in should_still_be_dropped {

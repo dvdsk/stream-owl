@@ -1,0 +1,32 @@
+[package]
+name = "stream-owl-test-support"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+stream-owl = { path = "../" }
+
+criterion = { version = "0.4", features = ["html_reports"] }
+tracing = "0.1.40"
+tracing-flame = "0.2"
+tracing-subscriber = { version = "0.3.18", features = ["env-filter"] }
+
+tracing-opentelemetry = "0.27.0"
+opentelemetry_sdk = { version = "0.26", features = ["rt-tokio"] }
+opentelemetry = "0.26"
+opentelemetry-otlp = { version = "0.26" }
+opentelemetry-semantic-conventions = "0.26"
+
+axum = { version = "0.7.4", features = ["tokio", "http1"] }
+axum-macros = "0.4.0"
+tower = "0.4"
+tower-http = { version = "0.5", features = ["fs", "trace"] }
+tempfile = "3"
+tokio = "1.41.0"
+http = "1.1.0"
+hyper = "1.5.0"
+hyper-util = "0.1.9"
+futures-concurrency = "7.6.1"
+futures = "0.3.31"
+rand = "0.8.5"
+pin-project-lite = "0.2.15"

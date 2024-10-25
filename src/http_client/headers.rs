@@ -3,8 +3,7 @@ use std::num::ParseIntError;
 use std::ops::Range;
 use std::sync::Arc;
 
-use axum::response::Response;
-use http::header;
+use http::{header, Response};
 
 /// wrapper around [`http::header::ToStrError`] providing a slow [`PartialEq`]
 /// implementation

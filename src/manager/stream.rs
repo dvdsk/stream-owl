@@ -19,7 +19,7 @@ pub use config::StreamConfig;
 
 use super::WrappedCallbacks;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct Id(usize);
 
 impl Id {
@@ -30,7 +30,7 @@ impl Id {
         Self(id)
     }
 
-    pub(crate) fn placeholder() -> Id {
+    pub(crate) const fn placeholder() -> Id {
         Self(0)
     }
 }

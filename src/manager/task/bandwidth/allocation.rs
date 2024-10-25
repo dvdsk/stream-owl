@@ -1,5 +1,4 @@
-use std::ops::{Deref, DerefMut, Range, RangeBounds};
-use std::slice;
+use std::collections::HashMap;
 use std::sync::atomic::Ordering;
 
 use crate::network::BandwidthAllowed;
@@ -46,10 +45,16 @@ impl AllocationInfo {
         self.allocated
     }
 
+    /// Increase in bandwidth allowed without going over the bandwidth limit,
+    /// current guess of any upstream limit or current allocation * 2. Unless
+    /// that allocation is smaller then 5KB
     pub(crate) fn until_limit(&self) -> Bandwidth {
         self.best_limit() - self.allocated
     }
 
+    /// Max bandwidth we can allocate without going over the bandwidth limit,
+    /// current guess of any upstream limit or current allocation * 2. Unless
+    /// that allocation is smaller then 5KB
     pub(crate) fn best_limit(&self) -> Bandwidth {
         let factor = 2;
         match self.upstream_limit {
@@ -64,193 +69,139 @@ impl AllocationInfo {
             Limit::Unknown => 10_000.max(self.allocated * factor),
         }
     }
-}
-
-/// is sorted on increasing bandwidth
-#[derive(Debug, Default)]
-pub(crate) struct Allocations(Vec<AllocationInfo>);
-
-impl Allocations {
-    pub(crate) fn insert(&mut self, info: AllocationInfo) {
-        let idx = match self
-            .0
-            .binary_search_by_key(&info.allocated, |info| info.allocated)
-        {
-            Ok(idx) => idx,
-            Err(idx) => idx,
-        };
-        self.0.insert(idx, info)
-    }
-
-    pub(crate) fn len(&self) -> usize {
-        self.0.len()
-    }
-
-    pub(crate) fn total_allocated(&self) -> Bandwidth {
-        self.0.iter().map(AllocationInfo::allocated).sum()
-    }
-
-    pub(crate) fn new(info: AllocationInfo) -> Allocations {
-        Self(vec![info])
-    }
-
-    pub(crate) fn pop_biggest(&mut self) -> Option<AllocationInfo> {
-        self.0.pop()
-    }
-
-    pub(crate) fn range(&self, range: Range<Bandwidth>) -> slice::Iter<AllocationInfo> {
-        let start = match self
-            .0
-            .binary_search_by_key(&range.start, |info| info.allocated)
-        {
-            Ok(idx) => idx,
-            Err(idx) => idx,
-        };
-        let end = match self
-            .0
-            .binary_search_by_key(&range.end, |info| info.allocated)
-        {
-            Ok(idx) => idx,
-            Err(idx) => idx,
-        };
-
-        self.0[start..end].iter()
-    }
-
-    pub(crate) fn range_mut(&mut self, range: impl RangeBounds<Bandwidth>) -> IterMut {
-        let start = match range.start_bound() {
-            std::ops::Bound::Included(i) => *i,
-            std::ops::Bound::Excluded(i) => *i + 1,
-            std::ops::Bound::Unbounded => 0,
-        };
-        let start = match self
-            .0
-            .binary_search_by_key(&start, AllocationInfo::allocated)
-        {
-            Ok(idx) => idx,
-            Err(idx) => idx,
-        };
-
-        let end = match range.end_bound() {
-            std::ops::Bound::Included(i) => *i,
-            std::ops::Bound::Excluded(i) => *i - 1,
-            std::ops::Bound::Unbounded => u32::MAX,
-        };
-        let end = match self.0.binary_search_by_key(&end, AllocationInfo::allocated) {
-            Ok(idx) => idx,
-            Err(idx) => idx,
-        };
-
-        IterMut(self.0[start..end].iter_mut())
-    }
-
-    /// panics if the order of the list changed
-    pub(crate) fn biggest_mut(&mut self) -> Option<Biggest> {
-        if self.is_empty() {
-            None
-        } else {
-            Some(Biggest(&mut self.0))
-        }
-    }
-
-    pub(crate) fn is_empty(&self) -> bool {
-        self.0.is_empty()
-    }
-
-    pub(crate) fn remove(&mut self, id: StreamId) -> Option<AllocationInfo> {
-        let (idx, _) = self.0.iter().enumerate().find(|(_, info)| info.id == id)?;
-        Some(self.0.remove(idx))
-    }
-
-    /// at the end of the iteration the order is restored
-    pub(crate) fn iter_mut(&mut self) -> IterMut {
-        IterMut(self.0.iter_mut())
-    }
-
-    pub(crate) fn iter(&mut self) -> std::slice::Iter<AllocationInfo> {
-        self.0.iter()
-    }
-
-    pub(crate) fn get_mut(&mut self, id: StreamId) -> Option<&mut AllocationInfo> {
-        self.0.iter_mut().find(|info| info.id == id)
-    }
-    pub(crate) fn get(&self, id: StreamId) -> Option<&AllocationInfo> {
-        self.0.iter().find(|info| info.id == id)
+    pub(crate) fn is_placeholder(&self) -> bool {
+        self.id == StreamId::placeholder()
     }
 }
 
-pub(crate) struct Biggest<'a>(&'a mut Vec<AllocationInfo>);
+/// When dropped this moves all the allocation info back into the
+/// allocation HashMap which this borrows
+pub struct Allocations<'a> {
+    list: Vec<AllocationInfo>,
+    /// when going out of scope drain back
+    drain: &'a mut HashMap<StreamId, AllocationInfo>,
+}
 
-impl<'a> Deref for Biggest<'a> {
-    type Target = AllocationInfo;
+impl<'a> Allocations<'a> {
+    pub fn new(
+        list: Vec<AllocationInfo>,
+        drain: &'a mut HashMap<StreamId, AllocationInfo>,
+    ) -> Self {
+        Self { list, drain }
+    }
+    pub fn free_all(&mut self) -> u32 {
+        self.list
+            .iter_mut()
+            .map(|info| {
+                let freed = info.allocated;
+                info.allocated = 0;
+                freed
+            })
+            .sum()
+    }
 
-    fn deref(&self) -> &Self::Target {
-        &self.0[self.0.len() - 1]
+    pub fn total_bandwidth(&self) -> u32 {
+        self.list.iter().map(AllocationInfo::allocated).sum()
+    }
+    pub fn numb_streams(&self) -> u32 {
+        self.list.len() as u32
+    }
+    pub fn iter_bandwidth_range(
+        &self,
+        range: std::ops::Range<u32>,
+    ) -> impl Iterator<Item = &AllocationInfo> {
+        self.list
+            .iter()
+            .filter(move |info| info.allocated >= range.start)
+            .filter(move |info| info.allocated < range.end)
+    }
+    pub fn iter_mut_bandwidth_range(
+        &mut self,
+        range: std::ops::RangeFrom<u32>,
+    ) -> impl Iterator<Item = &mut AllocationInfo> {
+        self.list
+            .iter_mut()
+            .filter(move |info| info.allocated >= range.start)
+    }
+    pub fn iter(&self) -> impl Iterator<Item = &AllocationInfo> {
+        self.list.iter()
+    }
+    pub fn get_mut(&mut self, index: usize) -> Option<&mut AllocationInfo> {
+        self.list.get_mut(index)
+    }
+
+    pub fn insert_placeholder(&mut self, allocated: u32) {
+        self.list.push(AllocationInfo {
+            id: StreamId::placeholder(),
+            target: crate::network::BandwidthAllowed::UnLimited,
+            curr_io_limit: 0,
+            allocated,
+            stream_still_exists: Arc::new(AtomicBool::new(true)),
+            upstream_limit: Limit::Unknown,
+        })
+    }
+    pub fn insert(&mut self, item: AllocationInfo) {
+        self.list.push(item)
+    }
+    #[must_use]
+    pub fn remove_biggest(&mut self) -> Option<AllocationInfo> {
+        let Some(index) = self
+            .iter()
+            .enumerate()
+            .max_by_key(|(_, info)| info.allocated)
+            .map(|(idx, _)| idx)
+        else {
+            return None;
+        };
+
+        Some(self.list.swap_remove(index))
+    }
+    #[must_use]
+    pub(crate) fn remove_smallest(&mut self) -> Option<AllocationInfo> {
+        let Some(index) = self
+            .iter()
+            .enumerate()
+            .min_by_key(|(_, info)| info.allocated)
+            .map(|(idx, _)| idx)
+        else {
+            return None;
+        };
+
+        Some(self.list.swap_remove(index))
+    }
+    #[must_use]
+    pub fn remove_placeholder(&mut self) -> Option<AllocationInfo> {
+        let Some(index) = self.list.iter().position(|item| item.is_placeholder()) else {
+            return None;
+        };
+
+        Some(self.list.swap_remove(index))
+    }
+    pub fn extend(&mut self, iter: impl Iterator<Item = AllocationInfo>) {
+        self.list.extend(iter)
+    }
+
+    /// moves the elements for which the predicate `pred` returns false
+    /// into a Vec which is returned
+    pub(crate) fn split_off_not(
+        &mut self,
+        pred: impl FnMut(&AllocationInfo) -> bool,
+    ) -> Vec<AllocationInfo> {
+        let list = std::mem::take(&mut self.list);
+        let (list_true, list_false) = list.into_iter().partition(pred);
+        self.list = list_true;
+        list_false
     }
 }
 
-impl<'a> DerefMut for Biggest<'a> {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        let idx = self.0.len() - 1;
-        &mut self.0[idx]
-    }
-}
-
-impl<'a> Drop for Biggest<'a> {
+impl<'a> Drop for Allocations<'a> {
     fn drop(&mut self) {
-        let len = self.0.len();
-        let list = &self.0;
-
-        let last = list.get(len - 1);
-        let before_last = list.get(len - 2);
-        let in_order = last
-            .zip(before_last)
-            .map(|(last, before_last)| last.allocated >= before_last.allocated)
-            .unwrap_or(true);
-        assert!(in_order, "Allocations must stay in order, thus the biggest element may not become smaller then the second biggest")
-    }
-}
-
-pub(crate) struct IterMut<'a>(slice::IterMut<'a, AllocationInfo>);
-
-impl<'a> Iterator for IterMut<'a> {
-    type Item = &'a mut AllocationInfo;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        let res = self.0.next();
-        if res.is_none() {
-            // end of iter, fixup order
-            let list = std::mem::take(&mut self.0);
-            list.into_slice()
-                .sort_unstable_by_key(|info| info.allocated)
-        }
-        res
-    }
-}
-
-impl<'a> Extend<AllocationInfo> for &'a mut Allocations {
-    fn extend<T: IntoIterator<Item = AllocationInfo>>(&mut self, iter: T) {
-        for info in iter {
-            self.insert(info);
-        }
-    }
-}
-
-impl<'a> IntoIterator for &'a Allocations {
-    type Item = &'a AllocationInfo;
-    type IntoIter = slice::Iter<'a, AllocationInfo>;
-
-    fn into_iter(self) -> Self::IntoIter {
-        (&self.0).into_iter()
-    }
-}
-
-impl<'a> IntoIterator for &'a mut Allocations {
-    type Item = &'a mut AllocationInfo;
-    type IntoIter = slice::IterMut<'a, AllocationInfo>;
-
-    fn into_iter(self) -> Self::IntoIter {
-        (&mut self.0).into_iter()
+        self.drain.extend(
+            self.list
+                .drain(..)
+                .filter(|info| !info.is_placeholder())
+                .map(|info| (info.id, info)),
+        )
     }
 }
 

@@ -1,14 +1,16 @@
+#![recursion_limit = "256"]
+
 use std::io::Read;
 use std::io::Seek;
 use std::sync::Arc;
 
-use stream_owl::testing;
 use stream_owl::BandwidthCallback;
 use stream_owl::LogCallback;
 use stream_owl::RangeCallback;
 use stream_owl::Reader;
 use stream_owl::StreamBuilder;
 use stream_owl::UnconfiguredSB;
+use stream_owl_test_support::static_file_server;
 use tokio::sync::Notify;
 use tracing::info;
 use tracing::instrument;
@@ -42,7 +44,7 @@ mod disk {
     #[test]
     fn seek_from_all_sides_works() {
         let configure = |b: StreamBuilder<false, _, _, _>| {
-            let path = stream_owl::testing::gen_file_path();
+            let path = stream_owl_test_support::gen_file_path();
             b.with_prefetch(0).to_disk(path)
         };
         seek_test(configure);
@@ -57,11 +59,11 @@ where
 {
     let test_file_size = 10_000u32;
     let test_done = Arc::new(Notify::new());
-    let (runtime_thread, mut handle) = testing::setup_reader_test(
+    let (runtime_thread, mut handle) = stream_owl_test_support::setup_reader_test(
         &test_done,
         test_file_size,
         configure,
-        testing::static_file_server,
+        static_file_server,
     );
 
     let mut reader = handle.try_get_reader().unwrap();

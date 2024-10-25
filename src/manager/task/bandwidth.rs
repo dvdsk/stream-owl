@@ -1,5 +1,5 @@
 use futures::FutureExt;
-use std::collections::{BTreeMap, HashMap, VecDeque};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::num::NonZeroU32;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -19,7 +19,7 @@ use crate::manager::task::bandwidth::allocation::Limit;
 use crate::network::BandwidthAllowed;
 use crate::{BandwidthLimit, IdBandwidthCallback, RangeCallback, StreamHandle, StreamId};
 
-use self::allocation::Bandwidth;
+use allocation::{Allocations, Bandwidth};
 
 #[derive(Debug, Copy, Clone, Default, PartialEq, Eq, Hash)]
 #[repr(usize)]
@@ -91,7 +91,7 @@ impl<B: IdBandwidthCallback> IdBandwidthCallback for WrappedCallback<B> {
     fn perform(&mut self, id: StreamId, bandwidth: usize) {
         let res = self.tx.try_send(Update::StreamUpdate { id, bandwidth });
 
-        // only warn once, the failure is probably caused by an
+        // Only warn once. The failure is probably caused by an
         // overloaded system or blocking too long. Lets not contribute to that
         static SHOULD_WARN: AtomicBool = AtomicBool::new(true);
         if let Err(TrySendError::Full(_)) = res {
@@ -137,8 +137,11 @@ pub(crate) struct Controller {
     previous_total_bw_perbutation: Option<Bandwidth>,
     next_sweep: Instant,
     next_check_available_bw: bool,
+
     bandwidth_by_id: HashMap<StreamId, BandwidthInfo>,
-    allocated_by_prio: BTreeMap<Priority, allocation::Allocations>,
+    /// TODO how to keep in sync
+    allocated_by_prio: BTreeMap<Priority, HashSet<StreamId>>,
+    allocations: HashMap<StreamId, allocation::AllocationInfo>,
 }
 
 impl Controller {
@@ -201,6 +204,7 @@ impl Controller {
                 bandwidth_by_id: HashMap::new(),
                 next_check_available_bw: true,
                 previous_total_bw_perbutation: None,
+                allocations: HashMap::new(),
             },
             bandwidth,
         )
@@ -213,9 +217,9 @@ impl Controller {
         id: StreamId,
         handles: &mut HashMap<StreamId, (AbortHandle, StreamHandle<R>)>,
     ) {
-        let mut info = None;
+        let info = self.allocations.remove(&id);
         for list in self.allocated_by_prio.values_mut() {
-            info = info.or(list.remove(id));
+            list.remove(&id);
         }
 
         self.bandwidth_by_id.remove(&id);
@@ -236,7 +240,7 @@ impl Controller {
     ) -> (StreamConfig, allocation::AllocationGuard) {
         use BandwidthAllowed as B;
         let init_limit = match config.bandwidth {
-            B::UnLimited => Bandwidth::MAX, // will be made fair in remove_bw_at_prio
+            B::UnLimited => Bandwidth::MAX, // will be made fair in next
             B::Limited(limit) => limit.0.get(),
         };
         let allocated_bw = self.remove_bw_at_and_below(config.priority, init_limit);
@@ -258,11 +262,12 @@ impl Controller {
             stream_still_exists: guard.stream_still_exists.clone(),
         };
 
+        self.allocations.insert(id, info);
         if let Some(list) = self.allocated_by_prio.get_mut(&config.priority) {
-            list.insert(info);
+            list.insert(id);
         } else {
             self.allocated_by_prio
-                .insert(config.priority, allocation::Allocations::new(info));
+                .insert(config.priority, HashSet::from([id]));
         }
 
         self.apply_new_limits(handles).await;
@@ -273,17 +278,17 @@ impl Controller {
         &self,
         handles: &mut HashMap<StreamId, (AbortHandle, StreamHandle<R>)>,
     ) {
-        for allocation::AllocationInfo {
-            allocated: new_bw,
+        for (
             id,
-            ..
-        } in self
-            .allocated_by_prio
+            allocation::AllocationInfo {
+                allocated: new_bw, ..
+            },
+        ) in self
+            .allocations
             .iter()
-            .flat_map(|(_, list)| list)
-            .filter(|info| info.allocated != info.curr_io_limit)
+            .filter(|(_, info)| info.allocated != info.curr_io_limit)
         {
-            let Some((_, handle)) = handles.get(id) else {
+            let Some((_, handle)) = handles.get(&id) else {
                 continue;
             };
             handle
@@ -295,34 +300,33 @@ impl Controller {
     }
 
     fn remove_bw_at_and_below(&mut self, priority: Priority, limit: u32) -> u32 {
-        // if there is only one other stream or no stream we have no idea of the total
-        // bandwidth available
-        if self.n_streams() < 2 {
+        // if there is only one other stream we currently have no guess of the
+        // total bandwidth available. Since that stream could very well be at its
+        // upstream limit.
+        if self.n_streams() <= 1 {
             return limit;
         }
 
-        // take needed space starting at the biggest allocation in the lowest prio.
-        // if we need all, take all from everyone. If we need a bit divide the leftovers
-        // never surpassing the previous value
+        // Take needed bandwidth from priorities lower then this stream up to
+        // this streams priority. Start at the biggest allocation for each
+        // priority. Take everything from the lower priorities if we need it.
+        // Divide evenly for streams at the same priority.
         let mut still_needed = limit;
         for p in ((Priority::lowest() as usize)..(priority as usize)).map(Priority::from_usize) {
-            let Some(list) = self.allocated_by_prio.get_mut(&p) else {
-                continue;
-            };
-
-            let allocced = list.total_allocated();
-            if allocced > still_needed {
-                Self::redivide(list, still_needed);
+            let mut allocations = self.allocations_at_priority(p);
+            if allocations.total_bandwidth() > still_needed {
+                divide::take(allocations, still_needed);
                 return limit;
             } else {
-                let got = self.take_all(p);
+                let got = allocations.free_all();
                 still_needed -= got;
             }
         }
 
-        // could not take enough from lower prio levels, take from same prio
+        // could not take enough from lower priority levels, take from same priority
         // starting with the biggest stopping once done
-        still_needed -= self.redivide_fair(priority, still_needed);
+        let allocations = self.allocations_at_priority(priority);
+        still_needed -= divide::spread(allocations, still_needed);
         limit - still_needed
     }
 
@@ -333,37 +337,45 @@ impl Controller {
             .sum()
     }
 
-    fn take_all(&mut self, p: Priority) -> u32 {
-        let Some(list) = self.allocated_by_prio.get_mut(&p) else {
-            return 0;
-        };
-
-        let mut freed = 0;
-        for info in list {
-            freed += info.allocated;
-            info.allocated = 0;
-        }
-        freed
-    }
-
     fn divide_new_bandwidth(&mut self, mut to_divide: u32) {
-        // spend first at highest prio
-        for list in self.allocated_by_prio.values_mut().rev() {
-            let guessed_limit = list
-                .iter_mut()
-                .filter(|info| info.upstream_limit.have_guess());
-            let left_over = divide::divide_new_bw(guessed_limit, to_divide);
-            to_divide = left_over;
+        // spend first at highest priority
+        let priorities: Vec<_> = self.allocated_by_prio.keys().copied().collect();
+        for priority in priorities {
+            let mut allocations = self.allocations_at_priority(priority);
+            let unknown_limit = allocations.split_off_not(|info| info.upstream_limit.have_guess());
+            let bandwith_left_over = {
+                let guessed_limit = allocations;
+                divide::divide_new_bw(guessed_limit, to_divide)
+            };
+
+            to_divide = bandwith_left_over;
             if to_divide == 0 {
                 return;
             }
 
-            let unknown_limit = list.iter_mut().filter(|info| info.upstream_limit.unknown());
+            let unknown_limit = Allocations::new(unknown_limit, &mut self.allocations);
             let left_over = divide::divide_new_bw(unknown_limit, to_divide);
             to_divide = left_over;
             if to_divide == 0 {
                 return;
             }
         }
+    }
+
+    /// Returned object must be drained back into self before it drops
+    #[must_use]
+    fn allocations_at_priority<'a>(&'a mut self, p: Priority) -> Allocations<'a> {
+        let list = self
+            .allocated_by_prio
+            .get(&p)
+            .into_iter()
+            .flatten()
+            .map(|id| {
+                self.allocations
+                    .remove(id)
+                    .expect("by_prio and alloctions should be in sync")
+            })
+            .collect();
+        Allocations::new(list, &mut self.allocations)
     }
 }

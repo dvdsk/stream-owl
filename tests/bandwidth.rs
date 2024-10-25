@@ -1,9 +1,12 @@
+#![recursion_limit = "256"]
+
 use std::io::Read;
 use std::num::NonZeroUsize;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use stream_owl::{testing, BandwidthLimit, StreamBuilder};
+use stream_owl::{BandwidthLimit, StreamBuilder};
+use stream_owl_test_support::{setup_reader_test, static_file_server};
 use tokio::sync::Notify;
 use tracing::info;
 
@@ -23,8 +26,8 @@ fn bw_stream_not_faster_then_limit() {
 
     let start = Instant::now();
     let (runtime_thread, mut handle) = {
-        testing::setup_reader_test(&test_done, test_file_size, configure, move |size| {
-            testing::static_file_server(size)
+        setup_reader_test(&test_done, test_file_size, configure, move |size| {
+            static_file_server(size)
         })
     };
 
@@ -58,8 +61,8 @@ fn test_run(spd_limit: u32) -> Duration {
     let test_done = Arc::new(Notify::new());
 
     let (runtime_thread, mut handle) = {
-        testing::setup_reader_test(&test_done, test_file_size, configure, move |size| {
-            testing::static_file_server(size)
+        setup_reader_test(&test_done, test_file_size, configure, move |size| {
+            static_file_server(size)
         })
     };
 
@@ -86,7 +89,7 @@ fn test_run(spd_limit: u32) -> Duration {
 
 #[test]
 fn bw_higher_limit_faster_speed() {
-    testing::setup_tracing();
+    stream_owl_test_support::tracing_setup::basic();
     let factor = 3f32;
     let base = 100;
     let high = ((base as f32) * factor) as u32;

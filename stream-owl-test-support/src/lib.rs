@@ -8,9 +8,8 @@ use futures_concurrency::future::Race;
 use tokio::runtime::Runtime;
 use tokio::sync::Notify;
 use tokio::task::{JoinError, JoinHandle};
-use tracing_subscriber::fmt::time::uptime;
 
-use crate::{
+use stream_owl::{
     BandwidthCallback, LogCallback, RangeCallback, StreamBuilder, StreamCanceld,
     StreamError, StreamHandle, UnconfiguredSB,
 };
@@ -20,6 +19,8 @@ pub use pausable_server::{pausable_server, Action, ConnControls, Event, ServerCo
 
 mod static_file_server;
 pub use static_file_server::static_file_server;
+
+pub mod tracing_setup;
 
 pub fn gen_file_path() -> PathBuf {
     use rand::distributions::Alphanumeric;
@@ -120,30 +121,4 @@ async fn wait_for_test_done(test_done: Arc<Notify>) -> TestEnded {
     TestEnded::TestDone
 }
 
-pub fn setup_tracing() {
-    use tracing_subscriber::filter;
-    use tracing_subscriber::fmt;
-    use tracing_subscriber::prelude::*;
 
-    let filter = filter::EnvFilter::builder()
-        .with_regex(true)
-        .try_from_env()
-        .unwrap_or_else(|_| {
-            filter::EnvFilter::builder()
-                .parse("stream_owl=debug,tower=info,info")
-                .unwrap()
-        });
-
-    let fmt = fmt::layer()
-        .with_timer(uptime())
-        .pretty()
-        .with_line_number(true)
-        .with_test_writer();
-    let fmt = fmt.with_filter(filter);
-
-    // let console_layer = console_subscriber::spawn();
-    let _ignore_err = tracing_subscriber::registry()
-        // .with(console_layer)
-        .with(fmt)
-        .try_init();
-}

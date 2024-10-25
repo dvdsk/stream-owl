@@ -1,12 +1,14 @@
+#![recursion_limit = "256"]
+
 use http::Uri;
 use std::io::Read;
 use std::net::SocketAddr;
 use std::sync::{mpsc, Arc};
 use std::thread;
 use std::time::Duration;
-use stream_owl::testing::{ServerControls, TestEnded};
-use stream_owl::{http_client, testing, StreamBuilder, StreamCanceld};
-use testing::ConnControls;
+use stream_owl::{http_client, StreamBuilder, StreamCanceld};
+use stream_owl_test_support::{pausable_server, setup_reader_test, ConnControls};
+use stream_owl_test_support::{ServerControls, TestEnded};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::sync::Notify;
 use tokio::task::{self, JoinHandle};
@@ -33,9 +35,14 @@ fn conn_drops_spaced_out() {
     let (runtime_thread, mut handle) = {
         let server_controls = server_controls.clone();
         let conn_controls = conn_controls.clone();
-        testing::setup_reader_test(&test_done, test_file_size, configure, move |size| {
-            testing::pausable_server(size, server_controls, conn_controls)
-        })
+        setup_reader_test(
+            &test_done,
+            test_file_size,
+            configure,
+            move |size| {
+                pausable_server(size, server_controls, conn_controls)
+            },
+        )
     };
 
     let mut reader = handle.try_get_reader().unwrap();
@@ -97,7 +104,7 @@ async fn server_hangs_loop(listener: tokio::net::TcpListener) -> Result<(), std:
 #[test]
 fn server_hangs() {
     let configure = {
-        move |b: StreamBuilder<false, _,_,_>| {
+        move |b: StreamBuilder<false, _, _, _>| {
             b.with_prefetch(0)
                 .to_unlimited_mem()
                 .with_max_retries(2)
@@ -110,7 +117,12 @@ fn server_hangs() {
 
     bad_server!(server_hangs_loop);
     let (runtime_thread, mut handle) = {
-        testing::setup_reader_test(&test_done, test_file_size, configure, move |_| bad_server())
+        setup_reader_test(
+            &test_done,
+            test_file_size,
+            configure,
+            move |_| bad_server(),
+        )
     };
 
     let mut reader = handle.try_get_reader().unwrap();
@@ -179,7 +191,12 @@ fn body_is_empty() {
 
     bad_server!(http200only_loop);
     let (runtime_thread, mut handle) = {
-        testing::setup_reader_test(&test_done, test_file_size, configure, move |_| bad_server())
+        setup_reader_test(
+            &test_done,
+            test_file_size,
+            configure,
+            move |_| bad_server(),
+        )
     };
 
     let mut reader = handle.try_get_reader().unwrap();

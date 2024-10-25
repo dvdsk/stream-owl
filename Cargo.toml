@@ -1,5 +1,5 @@
 [package]
-name = "stream_owl"
+name = "stream-owl"
 resolver = "2"
 version = "0.1.0"
 description = "A download and stream manager"
@@ -38,24 +38,27 @@ tokio = { version = "1", features = ["full", "tracing"] }
 tokio-stream = "0.1.14"
 tracing = "0.1.40"
 
-axum = { version = "0.7.4", features = ["tokio", "http1"] }
-tower = "0.4"
-tower-http = { version = "0.5", features = ["fs", "trace"] }
-tracing-subscriber = { version = "0.3.18", features = ["env-filter"] }
-tempfile = "3"
 derivative = "2"
 console-subscriber = "0.2.0"
 rand = "0.8"
-axum-macros = "0.4.0"
 governor = "0.6.0"
-opentelemetry = "0.21.0"
-tracing-opentelemetry = "0.22.0"
-opentelemetry_sdk = "0.21.2"
-opentelemetry-jaeger = { version = "0.20.0", features = ["rt-tokio", "isahc_collector_client"] }
+slotmap = "1.0.7"
 
 [dev-dependencies]
+stream-owl-test-support = { path = "stream-owl-test-support" }
+tracing-subscriber = "0.3.18"
 criterion = { version = "0.4", features = ["html_reports"] }
-tracing-flame = "0.2"
+# tracing-flame = "0.2"
+# opentelemetry_sdk = "0.21.2"
+# opentelemetry-jaeger = { version = "0.20.0", features = ["rt-tokio", "isahc_collector_client"] }
+# opentelemetry = "0.21.0"
+# tracing-opentelemetry = "0.22.0"
+# axum = { version = "0.7.4", features = ["tokio", "http1"] }
+# axum-macros = "0.4.0"
+# tower = "0.4"
+# tower-http = { version = "0.5", features = ["fs", "trace"] }
+# tracing-subscriber = { version = "0.3.18", features = ["env-filter"] }
+# tempfile = "3"
 
 [[bench]]
 name = "stream_bench"

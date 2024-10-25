@@ -4,8 +4,8 @@ use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 
-use stream_owl::testing::TestEnded;
-use stream_owl::{testing, StreamBuilder, StreamCanceld};
+use stream_owl_test_support::{setup_reader_test, static_file_server, TestEnded};
+use stream_owl::{StreamBuilder, StreamCanceld};
 use tokio::sync::Notify;
 
 #[test]
@@ -20,9 +20,12 @@ fn reader_only_makes_progress_after_unpause() {
     let test_done = Arc::new(Notify::new());
 
     let (runtime_thread, mut handle) = {
-        testing::setup_reader_test(&test_done, test_file_size, configure, move |size| {
-            testing::static_file_server(size)
-        })
+        setup_reader_test(
+            &test_done,
+            test_file_size,
+            configure,
+            move |size| static_file_server(size),
+        )
     };
 
     let mut reader = handle.try_get_reader().unwrap();
@@ -58,8 +61,8 @@ fn pausing_after_stream_work_is_done() {
     let test_done = Arc::new(Notify::new());
 
     let (runtime_thread, mut handle) = {
-        testing::setup_reader_test(&test_done, test_file_size, configure, move |size| {
-            testing::static_file_server(size)
+        setup_reader_test(&test_done, test_file_size, configure, move |size| {
+            static_file_server(size)
         })
     };
 

@@ -10,7 +10,7 @@ use tokio::task::JoinHandle;
 use tower_http::services::ServeFile;
 use tower_http::trace::TraceLayer;
 
-use crate::testing::test_data;
+use crate::test_data;
 
 fn gen_file_if_not_there(len: u64) -> PathBuf {
     static PATH: Mutex<Option<PathBuf>> = Mutex::new(None);

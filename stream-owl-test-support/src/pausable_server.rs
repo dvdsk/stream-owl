@@ -16,7 +16,7 @@ use tower::Service;
 use tower_http::trace::TraceLayer;
 use tracing::{instrument, error};
 
-use crate::testing::test_data;
+use crate::test_data;
 
 mod conn;
 pub use conn::{ConnControls, TestConn};
