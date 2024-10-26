@@ -184,34 +184,39 @@ mod divide_new {
 
 mod spread_perbutation {
     use crate::manager::task::bandwidth::BandwidthInfo;
-    use crate::BandwidthLimit;
 
     use super::*;
 
-    fn alloc_info(((_, growable), id): ((f32, Bandwidth), StreamId)) -> AllocationInfo {
+    #[derive(Debug, Clone)]
+    struct TestEntry {
+        steadyness: f32,
+        till_upstream_limit: Bandwidth,
+    }
+
+    fn alloc_info((entry, id): (TestEntry, StreamId)) -> AllocationInfo {
         AllocationInfo {
             id,
             target: crate::network::BandwidthAllowed::UnLimited,
             curr_io_limit: 100,
             allocated: 100,
             stream_still_exists: Arc::new(AtomicBool::new(true)),
-            upstream_limit: allocation::Limit::Guess(100 + growable),
+            upstream_limit: allocation::Limit::Guess(100 + entry.till_upstream_limit),
         }
     }
 
-    fn bw_info((streadyness, _): (f32, Bandwidth)) -> BandwidthInfo {
+    fn bw_info(entry: TestEntry) -> BandwidthInfo {
         BandwidthInfo {
             curr: 100,
-            steadyness: streadyness,
+            steadyness: entry.steadyness,
         }
     }
 
     // existing_bw is: (steadyness, bandwidth_limit)
     fn do_test<const N: usize>(
-        existing_bw: [(f32, Bandwidth); N],
+        existing_bw: [TestEntry; N],
         perbutation: Bandwidth,
-        resulting_bw: [Bandwidth; N],
-        left_over: Bandwidth,
+        expected_resulting_bw: [Bandwidth; N],
+        expected_left_over: Bandwidth,
     ) {
         let mut allocations = HashMap::new();
         let ids: Vec<_> = existing_bw.iter().map(|_| StreamId::new()).collect();
@@ -240,61 +245,88 @@ mod spread_perbutation {
             curr.1.curr
         });
 
-        let res = spread_perbutation(perbutation, increasing_steadyness_borrow, &mut allocations);
-        let extra: Vec<_> = ids
+        let left_over =
+            spread_perbutation(perbutation, increasing_steadyness_borrow, &mut allocations);
+        let bandwidth_increases: Vec<_> = ids
             .into_iter()
             .map(|id| allocations.get(&id).unwrap().allocated - 100)
             .collect();
-        assert_eq!(extra.as_slice(), &resulting_bw);
-        assert_eq!(perbutation, extra.iter().sum::<Bandwidth>() + left_over);
-        assert_eq!(res, left_over);
+        assert_eq!(bandwidth_increases.as_slice(), &expected_resulting_bw);
+        assert_eq!(
+            perbutation,
+            bandwidth_increases.iter().sum::<Bandwidth>() + left_over,
+            "perbutation: {perbutation}, should be equal to sum(bandwidth_increases): {} + left over: {left_over}", bandwidth_increases.iter().sum::<Bandwidth>()
+        );
+        assert_eq!(left_over, expected_left_over);
     }
 
     #[test]
+    #[rustfmt::skip]
     fn all_super_steady() {
-        do_test([(0.99, 40), (0.99, 10), (0.90, 30)], 9, [4, 4, 1], 0)
-    }
-
-    #[test]
-    fn high_with_little_bw_low_with_lots() {
-        do_test([(0.99, 5), (0.99, 10), (0.85, 40)], 20, [5, 10, 5], 0)
-    }
-
-    #[test]
-    fn long_list() {
         do_test(
             [
-                (0.99, 5),
-                (0.98, 10),
-                (0.95, 40),
-                (0.93, 5),
-                (0.91, 10),
-                (0.90, 40),
-                (0.85, 40),
-                (0.83, 5),
-                (0.81, 10),
-                (0.80, 40),
+                TestEntry { steadyness: 0.99, till_upstream_limit: 40 },
+                TestEntry { steadyness: 0.99, till_upstream_limit: 10 },
+                TestEntry { steadyness: 0.90, till_upstream_limit: 30 },
             ],
-            20,
-            [4, 4, 3, 3, 3, 3, 0, 0, 0, 0],
+            9,
+            [4, 4, 1],
             0,
         )
     }
 
     #[test]
+    #[rustfmt::skip]
+    fn high_with_little_bw_low_with_lots() {
+        do_test(
+            [
+                 TestEntry { steadyness: 0.99, till_upstream_limit: 5 },
+                 TestEntry { steadyness: 0.99, till_upstream_limit: 10 },
+                 TestEntry { steadyness: 0.85, till_upstream_limit: 40 },
+            ],
+            20,
+            [5, 10, 5],
+            0,
+        )
+    }
+
+    #[test]
+    #[rustfmt::skip]
+    fn long_list() {
+        do_test(
+            [
+                 TestEntry { steadyness: 0.99, till_upstream_limit: 5 },
+                 TestEntry { steadyness: 0.98, till_upstream_limit: 10 }, 
+                 TestEntry { steadyness: 0.95, till_upstream_limit: 40 }, 
+                 TestEntry { steadyness: 0.93, till_upstream_limit: 5 },
+                 TestEntry { steadyness: 0.91, till_upstream_limit: 10 },
+                 TestEntry { steadyness: 0.90, till_upstream_limit: 40 },
+                 TestEntry { steadyness: 0.85, till_upstream_limit: 40 },
+                 TestEntry { steadyness: 0.83, till_upstream_limit: 5 },
+                 TestEntry { steadyness: 0.81, till_upstream_limit: 10 },
+                 TestEntry { steadyness: 0.80, till_upstream_limit: 40 },
+            ],
+            20,
+            [5, 5, 4, 3, 2, 1, 0, 0, 0, 0],
+            0,
+        )
+    }
+
+    #[test]
+    #[rustfmt::skip]
     fn not_enough_room() {
         do_test(
             [
-                (0.99, 1),
-                (0.98, 1),
-                (0.95, 1),
-                (0.93, 1),
-                (0.91, 1),
-                (0.90, 1),
-                (0.85, 1),
-                (0.83, 1),
-                (0.81, 1),
-                (0.80, 1),
+                TestEntry { steadyness: 0.99, till_upstream_limit: 1},
+                TestEntry { steadyness: 0.98, till_upstream_limit: 1},
+                TestEntry { steadyness: 0.95, till_upstream_limit: 1},
+                TestEntry { steadyness: 0.93, till_upstream_limit: 1},
+                TestEntry { steadyness: 0.91, till_upstream_limit: 1},
+                TestEntry { steadyness: 0.90, till_upstream_limit: 1},
+                TestEntry { steadyness: 0.85, till_upstream_limit: 1},
+                TestEntry { steadyness: 0.83, till_upstream_limit: 1},
+                TestEntry { steadyness: 0.81, till_upstream_limit: 1},
+                TestEntry { steadyness: 0.80, till_upstream_limit: 1},
             ],
             20,
             [1, 1, 1, 1, 1, 1, 1, 1, 1, 1],

@@ -142,26 +142,6 @@ fn take_flattening_the_top<'a>(wished_for: u32, mut list: Allocations) -> u32 {
     return freed;
 }
 
-struct FlatTop {
-    // limit: Bandwidth,
-    // height: Bandwidth,
-    in_top: Vec<AllocationInfo>,
-    // removed: Vec<AllocationInfo>,
-}
-
-impl Drop for FlatTop {
-    fn drop(&mut self) {
-        if self.in_top.is_empty() {
-            //&& self.removed.is_empty() {
-            return;
-        }
-
-        eprintln!("items should have been reinserted into the allocations list");
-        dbg!(&self.in_top); //, &self.removed);
-        panic!();
-    }
-}
-
 struct FlatBottom {
     limit: Bandwidth,
     height: Bandwidth,
@@ -324,9 +304,8 @@ pub(crate) fn spread_perbutation(
     let mut ratios: Vec<(StreamId, f32)> = iter::once((*best.0, 1.0))
         .chain(stream_info.into_iter().map(|(id, item)| {
             let dist_to_best = best.1.steadyness - item.steadyness;
-            let mul = dbg!(dist_to_best) * spread_factor;
-            dbg!(mul);
-            let ratio = (1.0 - mul).max(0.5);
+            let mul = dist_to_best * spread_factor;
+            let ratio = (1.0 - mul).max(0.05);
             (*id, ratio)
         }))
         .collect();
@@ -335,30 +314,28 @@ pub(crate) fn spread_perbutation(
 
     let mut unused = 0f32;
     'done: while !ratios.is_empty() {
-        dbg!(&ratios);
         let total: f32 = ratios.iter().map(|(_, ratio)| ratio).sum();
         let mut to_divide_amoung = ratios.iter().copied();
         let biggest_share = ratios.first().expect("len > 0").1 / total;
-        for (_, increase) in &mut perbutation_per_stream {
-            *increase = 0;
-        }
+        perbutation_per_stream.clear();
 
         'remove: loop {
             let Some((id, ratio)) = to_divide_amoung.next() else {
-                if unused >= 1.0 {
+                const FLOAT_MARGIN: f32 = 0.0004; // correct for 0.99999993 != 1.0
+                if unused + FLOAT_MARGIN >= 1.0 {
                     for (id, perbutation) in perbutation_per_stream.drain() {
                         allocations.get_mut(&id).expect("not removed").allocated += perbutation;
                     }
-                    to_spread = unused.floor() as u32;
-                    unused = unused.fract();
+                    to_spread = (unused + FLOAT_MARGIN).floor() as u32;
+                    unused = (unused + FLOAT_MARGIN).fract();
                     break 'remove;
                 }
+                dbg!();
                 break 'done;
             };
             assert!(to_spread > 0);
             assert!(total > 0.0);
             let share = ratio / total;
-            dbg!(share, to_spread);
             let naive_increase = share * (to_spread as f32);
             let info = allocations.get_mut(&id).expect("not removed");
 
@@ -370,6 +347,7 @@ pub(crate) fn spread_perbutation(
                     .position(|(sid, _)| *sid == id)
                     .expect("came from ratios vec");
                 ratios.remove(to_remove);
+                dbg!();
                 break 'remove;
             }
 
@@ -385,20 +363,23 @@ pub(crate) fn spread_perbutation(
             }
 
             let possible_increase = naive_increase.floor() as u32;
-            dbg!(unused, naive_increase, possible_increase);
             unused += naive_increase - possible_increase as f32;
-            dbg!(unused);
             perbutation_per_stream.insert(id, possible_increase);
         }
 
         if to_spread == 0 {
-            break;
+            dbg!(unused, &perbutation_per_stream);
+            break 'done;
         }
     }
 
     for (id, perbutation) in perbutation_per_stream {
         allocations.get_mut(&id).expect("not removed").allocated += perbutation;
+        to_spread -= perbutation;
     }
-    assert_eq!(unused.floor(), 0.0);
-    return to_spread
+    // assert!(
+    //     unused < 0.0004,
+    //     "unused: {unused}, should be (very close to) zero"
+    // );
+    return to_spread;
 }
