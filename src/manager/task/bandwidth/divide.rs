@@ -289,17 +289,100 @@ fn divide_within_flat(flat: &mut FlatBottom, spread_out: &mut u32, to_divide: u3
 /// Returns the bandwidth that could not be spread out
 pub(crate) fn spread_perbutation(
     mut to_spread: Bandwidth,
-    mut stream_info: Vec<(&StreamId, &super::BandwidthInfo)>,
+    stream_info: Vec<(&StreamId, &super::BandwidthInfo)>,
     allocations: &mut HashMap<StreamId, AllocationInfo>,
 ) -> Bandwidth {
     let mut perbutation_per_stream = HashMap::new();
+    let mut ratios = ratios(stream_info);
 
+    let mut unused = 0f32;
+    'done: while !ratios.is_empty() {
+        let total: f32 = ratios.iter().map(|(_, ratio)| ratio).sum();
+        let mut to_divide_amoung = ratios.iter().copied();
+        let biggest_share = ratios.first().expect("len > 0").1 / total;
+        perbutation_per_stream.clear();
+
+        'changed: loop {
+            let Some((id, ratio)) = to_divide_amoung.next() else {
+                const FLOAT_MARGIN: f32 = 0.0004; // correct for 0.99999993 != 1.0
+                if unused + FLOAT_MARGIN >= 1.0 {
+                    for (id, perbutation) in perbutation_per_stream.drain() {
+                        allocations.get_mut(&id).expect("not removed").allocated += perbutation;
+                    }
+                    to_spread = (unused + FLOAT_MARGIN).floor() as u32;
+                    unused = (unused + FLOAT_MARGIN).fract();
+                    break 'changed;
+                }
+                break 'done;
+            };
+            let share = ratio / total;
+            let naive_increase = share * (to_spread as f32);
+
+            let alloc = allocations.get_mut(&id).expect("not removed");
+            if let Some(increased) = increased_to_limit(naive_increase, alloc).or_else(|| {
+                increased_with_everything_we_had(naive_increase, to_spread, alloc, biggest_share)
+            }) {
+                to_spread -= increased;
+                let to_remove = ratios
+                    .iter()
+                    .position(|(element, _)| *element == id)
+                    .expect("came from ratios vec");
+                ratios.remove(to_remove);
+                break 'changed;
+            }
+
+            let possible_increase = naive_increase.floor() as u32;
+            unused += naive_increase - possible_increase as f32;
+            perbutation_per_stream.insert(id, possible_increase);
+        }
+
+        if to_spread == 0 {
+            break 'done;
+        }
+    }
+
+    for (id, perbutation) in perbutation_per_stream {
+        allocations.get_mut(&id).expect("not removed").allocated += perbutation;
+        to_spread -= perbutation;
+    }
+    return to_spread;
+}
+
+/// Check if the increase can be applied or the stream is saturated at its upstream limit
+fn increased_to_limit(naive_increase: f32, alloc: &mut AllocationInfo) -> Option<Bandwidth> {
+    if naive_increase.floor() as Bandwidth >= alloc.until_limit() {
+        let increase = alloc.until_limit();
+        alloc.allocated += increase;
+        Some(increase)
+    } else {
+        None
+    }
+}
+
+/// 
+fn increased_with_everything_we_had(
+    naive_increase: f32,
+    to_spread: u32,
+    alloc: &mut AllocationInfo,
+    biggest_share: f32,
+) -> Option<Bandwidth> {
+    assert!(to_spread > 0);
+    if naive_increase < 1.0 && (biggest_share * to_spread as f32) < 1.0 {
+        alloc.allocated += 1;
+        Some(1)
+    } else {
+        None
+    }
+}
+
+fn ratios(mut stream_info: Vec<(&StreamId, &super::BandwidthInfo)>) -> Vec<(StreamId, f32)> {
     let best = stream_info
         .iter()
         .position_max_by(|a, b| a.1.steadyness.total_cmp(&b.1.steadyness))
         .expect("len > 0");
     let best = stream_info.swap_remove(best);
-    let spread_factor = 6.0; // lower is more spread out
+    let spread_factor = 6.0;
+    // lower is more spread out
 
     let mut ratios: Vec<(StreamId, f32)> = iter::once((*best.0, 1.0))
         .chain(stream_info.into_iter().map(|(id, item)| {
@@ -311,75 +394,5 @@ pub(crate) fn spread_perbutation(
         .collect();
     ratios.sort_unstable_by(|(_, a), (_, b)| b.total_cmp(&a));
     assert!(ratios.iter().all(|(_, ratio)| *ratio > 0.0));
-
-    let mut unused = 0f32;
-    'done: while !ratios.is_empty() {
-        let total: f32 = ratios.iter().map(|(_, ratio)| ratio).sum();
-        let mut to_divide_amoung = ratios.iter().copied();
-        let biggest_share = ratios.first().expect("len > 0").1 / total;
-        perbutation_per_stream.clear();
-
-        'remove: loop {
-            let Some((id, ratio)) = to_divide_amoung.next() else {
-                const FLOAT_MARGIN: f32 = 0.0004; // correct for 0.99999993 != 1.0
-                if unused + FLOAT_MARGIN >= 1.0 {
-                    for (id, perbutation) in perbutation_per_stream.drain() {
-                        allocations.get_mut(&id).expect("not removed").allocated += perbutation;
-                    }
-                    to_spread = (unused + FLOAT_MARGIN).floor() as u32;
-                    unused = (unused + FLOAT_MARGIN).fract();
-                    break 'remove;
-                }
-                dbg!();
-                break 'done;
-            };
-            assert!(to_spread > 0);
-            assert!(total > 0.0);
-            let share = ratio / total;
-            let naive_increase = share * (to_spread as f32);
-            let info = allocations.get_mut(&id).expect("not removed");
-
-            if naive_increase.floor() as u32 > info.until_limit() {
-                to_spread -= info.until_limit();
-                allocations.get_mut(&id).expect("not removed").allocated += info.until_limit();
-                let to_remove = ratios
-                    .iter()
-                    .position(|(sid, _)| *sid == id)
-                    .expect("came from ratios vec");
-                ratios.remove(to_remove);
-                dbg!();
-                break 'remove;
-            }
-
-            if naive_increase < 1.0 && (biggest_share * to_spread as f32) < 1.0 {
-                to_spread -= 1;
-                allocations.get_mut(&id).expect("not removed").allocated += 1;
-                let to_remove = ratios
-                    .iter()
-                    .position(|(sid, _)| *sid == id)
-                    .expect("came from ratios vec");
-                ratios.remove(to_remove);
-                break 'remove;
-            }
-
-            let possible_increase = naive_increase.floor() as u32;
-            unused += naive_increase - possible_increase as f32;
-            perbutation_per_stream.insert(id, possible_increase);
-        }
-
-        if to_spread == 0 {
-            dbg!(unused, &perbutation_per_stream);
-            break 'done;
-        }
-    }
-
-    for (id, perbutation) in perbutation_per_stream {
-        allocations.get_mut(&id).expect("not removed").allocated += perbutation;
-        to_spread -= perbutation;
-    }
-    // assert!(
-    //     unused < 0.0004,
-    //     "unused: {unused}, should be (very close to) zero"
-    // );
-    return to_spread;
+    ratios
 }
