@@ -302,6 +302,9 @@ pub(crate) fn spread_perbutation(
         let biggest_share = ratios.first().expect("len > 0").1 / total;
         perbutation_per_stream.clear();
 
+        // Divide the left over bandwidth (to_spread) among streams.
+        // The most steady stream gets the `most`. The other stream get
+        // bandwidth depending on how steady they are compared to the steadiest
         'changed: loop {
             let Some((id, ratio)) = to_divide_amoung.next() else {
                 const FLOAT_MARGIN: f32 = 0.0004; // correct for 0.99999993 != 1.0
@@ -318,15 +321,24 @@ pub(crate) fn spread_perbutation(
             let share = ratio / total;
             let naive_increase = share * (to_spread as f32);
 
+            // If a steam cannot accept its share of bandwidth, because that would
+            // surpasses its bandwidth limit, it is removed. On removal the stream's
+            // allocation is increased by what it can accept and re-inserted into
+            // the allocations map. After removal ratios are re-computed.
+            //
+            // If the naive_increase is smaller then a byte but we have left_over
+            // bandwidth to spread give it to the biggest stream then remove
+            // that stream.
             let alloc = allocations.get_mut(&id).expect("not removed");
-            if let Some(increased) = increased_to_limit(naive_increase, alloc).or_else(|| {
-                increased_with_everything_we_had(naive_increase, to_spread, alloc, biggest_share)
-            }) {
-                to_spread -= increased;
+            if let Some(increase) = increased_to_limit(naive_increase, alloc)
+                .or_else(|| biggest_fractional_increase(naive_increase, to_spread, biggest_share))
+            {
+                alloc.allocated += increase;
+                to_spread -= increase;
                 let to_remove = ratios
                     .iter()
                     .position(|(element, _)| *element == id)
-                    .expect("came from ratios vec");
+                    .expect("id came from this vec");
                 ratios.remove(to_remove);
                 break 'changed;
             }
@@ -352,23 +364,19 @@ pub(crate) fn spread_perbutation(
 fn increased_to_limit(naive_increase: f32, alloc: &mut AllocationInfo) -> Option<Bandwidth> {
     if naive_increase.floor() as Bandwidth >= alloc.until_limit() {
         let increase = alloc.until_limit();
-        alloc.allocated += increase;
         Some(increase)
     } else {
         None
     }
 }
 
-/// 
-fn increased_with_everything_we_had(
+fn biggest_fractional_increase(
     naive_increase: f32,
     to_spread: u32,
-    alloc: &mut AllocationInfo,
     biggest_share: f32,
 ) -> Option<Bandwidth> {
     assert!(to_spread > 0);
     if naive_increase < 1.0 && (biggest_share * to_spread as f32) < 1.0 {
-        alloc.allocated += 1;
         Some(1)
     } else {
         None
