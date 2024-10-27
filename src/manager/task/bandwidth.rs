@@ -334,7 +334,7 @@ impl Controller {
         for p in ((Priority::lowest() as usize)..(priority as usize)).map(Priority::from_usize) {
             let mut allocations = self.allocations_at_priority(p);
             if allocations.total_bandwidth() > still_needed {
-                let changes = divide::take(&allocations, still_needed);
+                let changes = divide::take(allocations.iter(), still_needed);
                 for info in allocations.iter_mut() {
                     info.allocated += changes.get(&info.id).copied().unwrap_or_default();
                 }

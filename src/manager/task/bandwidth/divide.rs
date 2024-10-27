@@ -15,7 +15,10 @@ mod tests;
 ///
 /// # Panics
 /// panics if there is not enough to free up
-pub(super) fn take(allocations: &Allocations, needed: u32) -> HashMap<StreamId, Bandwidth> {
+pub(super) fn take<'a>(
+    allocations: impl Iterator<Item = &'a AllocationInfo> + Clone,
+    needed: u32,
+) -> HashMap<StreamId, Bandwidth> {
     // visualize the allocations as a hillside. We need an amount of dirt.
     // This algorithm digs it up starting at the hills top. Eventually we
     // will have the right amount of dirt and be left with a flat topped
@@ -27,27 +30,31 @@ pub(super) fn take(allocations: &Allocations, needed: u32) -> HashMap<StreamId, 
     // - The height in is the maximum bandwidth of a stream.
     // - The amount of dirt is the total bandwidth freed
     let biggest_peak = allocations
-        .iter()
+        .clone()
         .max_by_key(|info| info.allocated)
         .map(|info| info.id);
-    let planned_hill_size = allocations.total_bandwidth() - needed;
+    let total_bandwidth: Bandwidth = allocations.clone().map(|info| info.allocated).sum();
+    let planned_hill_size = total_bandwidth - needed;
 
     // Guess the new maximum height for the mountain. This assumes the
     // mountain is a cube. If its not we get too much dirt and we increase
     // the height.
-    let hill_width = allocations.numb_streams();
+    let hill_width = allocations.clone().count() as u32;
     let mut proposed_height = planned_hill_size / hill_width;
 
     // Could take a few loops to get right, lets not take too many, we may
     // be on a deadline
     for _ in 0..5 {
         let dirt_under_height = allocations
-            .iter_bandwidth_range(0..proposed_height)
+            .clone()
             .map(|info| info.allocated)
+            .filter(|bw| *bw < proposed_height)
             .sum::<u32>();
 
         let hill_width_above_height = allocations
-            .iter_bandwidth_range(proposed_height..u32::MAX)
+            .clone()
+            .map(|info| info.allocated)
+            .filter(|bw| proposed_height >= *bw)
             .count() as u32;
 
         // Ignore the part of the hill under the previously proposed height
@@ -65,7 +72,7 @@ pub(super) fn take(allocations: &Allocations, needed: u32) -> HashMap<StreamId, 
 
     let mut freed = 0;
     let mut needed_changes = HashMap::new();
-    for too_high in allocations.iter_bandwidth_range2(final_height..) {
+    for too_high in allocations.filter(|info| info.allocated > final_height) {
         let decrease = too_high.allocated - final_height;
         needed_changes.insert(too_high.id, decrease);
         freed += decrease;

@@ -21,20 +21,18 @@ mod take {
     use super::*;
 
     fn do_test<const N: usize>(existing_bw: [u32; N], needed: u32, resulting_bw: [u32; N]) {
-        let mut drain = HashMap::new();
-        let list = existing_bw.into_iter().map(info).collect();
+        let mut list: HashMap<_, _> = existing_bw
+            .into_iter()
+            .map(info)
+            .map(|info| (info.id, info))
+            .collect();
 
-        let changes = {
-            let allocations = Allocations::new(list, &mut drain);
-            let changes = take(&allocations, needed);
-            changes
-        };
-
+        let changes = take(list.values(), needed);
         for (id, change) in changes {
-            drain.entry(id).and_modify(|info| info.allocated -= change);
+            list.entry(id).and_modify(|info| info.allocated -= change);
         }
 
-        let mut list: Vec<_> = drain.into_iter().collect();
+        let mut list: Vec<_> = list.into_iter().collect();
         list.sort_by_key(|(id, _)| *id);
         let list: Vec<_> = list.into_iter().map(|(_, info)| info.allocated).collect();
         assert_eq!(list.as_slice(), &resulting_bw);

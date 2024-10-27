@@ -151,10 +151,8 @@ impl Controller {
         let perbutation = self
             .optimal_total_bw_perbutation()
             .min(five_percent_of_allocation);
-        let list = self.allocations.drain().map(|(_, info)| info).collect();
-        let allocations = Allocations::new(list, &mut self.allocations);
-        let mut changes = divide::take(&allocations, perbutation);
-        drop(allocations);
+        let list = self.allocations.iter().map(|(_, info)| info);
+        let mut changes = divide::take(list, perbutation);
         changes.insert(to_check.id, perbutation);
 
         to_check.allocated += perbutation;

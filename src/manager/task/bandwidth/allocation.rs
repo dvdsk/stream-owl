@@ -103,34 +103,12 @@ impl<'a> Allocations<'a> {
     pub fn total_bandwidth(&self) -> u32 {
         self.list.iter().map(AllocationInfo::allocated).sum()
     }
-    pub fn numb_streams(&self) -> u32 {
-        self.list.len() as u32
-    }
-    pub fn iter_bandwidth_range(
-        &self,
-        range: std::ops::Range<u32>,
-    ) -> impl Iterator<Item = &AllocationInfo> {
-        self.list
-            .iter()
-            .filter(move |info| info.allocated >= range.start)
-            .filter(move |info| info.allocated < range.end)
-    }
-    pub fn iter_bandwidth_range2(
-        &self,
-        range: std::ops::RangeFrom<u32>,
-    ) -> impl Iterator<Item = &AllocationInfo> {
-        self.list
-            .iter()
-            .filter(move |info| info.allocated >= range.start)
-    }
-    pub fn iter(&self) -> impl Iterator<Item = &AllocationInfo> {
+
+    pub fn iter(&self) -> impl Iterator<Item = &AllocationInfo> + Clone {
         self.list.iter()
     }
     pub fn iter_mut(&mut self) -> impl Iterator<Item = &mut AllocationInfo> {
         self.list.iter_mut()
-    }
-    pub fn get_mut(&mut self, index: usize) -> Option<&mut AllocationInfo> {
-        self.list.get_mut(index)
     }
 
     pub fn insert_placeholder(&mut self, allocated: u32) {
