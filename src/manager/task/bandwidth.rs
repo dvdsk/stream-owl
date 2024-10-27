@@ -19,7 +19,7 @@ use crate::manager::task::bandwidth::allocation::Limit;
 use crate::network::BandwidthAllowed;
 use crate::{BandwidthLimit, IdBandwidthCallback, RangeCallback, StreamHandle, StreamId};
 
-use allocation::{Allocations, Bandwidth};
+use allocation::{AllocationInfo, Allocations, Bandwidth};
 
 #[derive(Debug, Copy, Clone, Default, PartialEq, Eq, Hash)]
 #[repr(usize)]
@@ -111,9 +111,7 @@ impl<B: IdBandwidthCallback> IdBandwidthCallback for WrappedCallback<B> {
 struct BandwidthInfo {
     // last known bandwidth
     curr: Bandwidth,
-    // if below limit set to 0
-    // each time we are at the limit
-    // we set this to itself *0.9 + 0.1 * the distance in % to the limit
+    // number between 0 and 1. Higher means the stream has been close to its limit for longer
     steadyness: f32,
 }
 
@@ -126,7 +124,8 @@ impl BandwidthInfo {
 
         let distance = now_at as f32 / limit_was as f32;
         let distance = distance.max(1.0);
-        self.steadyness = self.steadyness * 0.9 + distance * 0.1
+        self.steadyness = self.steadyness * 0.9 + distance * 0.1;
+        self.steadyness = self.steadyness.max(1.0);
     }
 }
 
@@ -139,10 +138,16 @@ pub(crate) struct Controller {
     next_sweep: Instant,
     next_check_available_bw: bool,
 
+    /// last stream checked for more bandwidth in list `bandwidth_by_id`
+    last_index_checked: usize,
+    /// list of StreamId in some order
     bandwidth_by_id: HashMap<StreamId, BandwidthInfo>,
-    /// TODO how to keep in sync
+
+    stream_perbutations: HashMap<StreamId, Bandwidth>,
+
     allocated_by_prio: BTreeMap<Priority, HashSet<StreamId>>,
-    allocations: HashMap<StreamId, allocation::AllocationInfo>,
+    orderd_streamids: Vec<StreamId>,
+    allocations: HashMap<StreamId, AllocationInfo>,
 }
 
 impl Controller {
@@ -175,6 +180,8 @@ impl Controller {
             Update::Scheduled => {
                 self.remove_allocs_that_failed_to_do_so(handles).await;
                 self.sweep(handles).await;
+                // TODO: Should probably be dynamic <dvdsk>
+                self.next_sweep = Instant::now() + Duration::from_millis(200);
             }
             Update::Drop(stream_id) => self.remove(stream_id, handles).await,
         }
@@ -199,13 +206,17 @@ impl Controller {
                 rx,
                 tx,
                 bandwidth_lim,
-                next_sweep: Instant::now() + Duration::MAX,
-                allocated_by_prio: BTreeMap::new(),
+                next_sweep: Instant::now() + Duration::ZERO,
                 previous_sweeps_bw: VecDeque::new(),
-                bandwidth_by_id: HashMap::new(),
                 next_check_available_bw: true,
                 previous_total_bw_perbutation: None,
+
+                last_index_checked: 0,
+                orderd_streamids: Vec::new(),
+                bandwidth_by_id: HashMap::new(),
+                allocated_by_prio: BTreeMap::new(),
                 allocations: HashMap::new(),
+                stream_perbutations: HashMap::new(),
             },
             bandwidth,
         )
@@ -218,6 +229,12 @@ impl Controller {
         id: StreamId,
         handles: &mut HashMap<StreamId, (AbortHandle, StreamHandle<R>)>,
     ) {
+        let pos = self
+            .orderd_streamids
+            .iter()
+            .position(|i| *i == id)
+            .expect("elements only removed here");
+        self.orderd_streamids.remove(pos);
         let info = self.allocations.remove(&id);
         for list in self.allocated_by_prio.values_mut() {
             list.remove(&id);
@@ -254,7 +271,7 @@ impl Controller {
             stream_still_exists: Arc::new(AtomicBool::new(true)),
             id,
         };
-        let info = allocation::AllocationInfo {
+        let info = AllocationInfo {
             id,
             curr_io_limit: allocated_bw,
             allocated: allocated_bw,
@@ -263,6 +280,7 @@ impl Controller {
             stream_still_exists: guard.stream_still_exists.clone(),
         };
 
+        self.orderd_streamids.push(id);
         self.allocations.insert(id, info);
         if let Some(list) = self.allocated_by_prio.get_mut(&config.priority) {
             list.insert(id);
@@ -281,7 +299,7 @@ impl Controller {
     ) {
         for (
             id,
-            allocation::AllocationInfo {
+            AllocationInfo {
                 allocated: new_bw, ..
             },
         ) in self
@@ -316,7 +334,10 @@ impl Controller {
         for p in ((Priority::lowest() as usize)..(priority as usize)).map(Priority::from_usize) {
             let mut allocations = self.allocations_at_priority(p);
             if allocations.total_bandwidth() > still_needed {
-                divide::take(allocations, still_needed);
+                let changes = divide::take(&allocations, still_needed);
+                for info in allocations.iter_mut() {
+                    info.allocated += changes.get(&info.id).copied().unwrap_or_default();
+                }
                 return limit;
             } else {
                 let got = allocations.free_all();
@@ -378,5 +399,9 @@ impl Controller {
             })
             .collect();
         Allocations::new(list, &mut self.allocations)
+    }
+
+    fn note_stream_limits(&self) {
+        todo!()
     }
 }

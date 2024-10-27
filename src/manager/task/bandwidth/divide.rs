@@ -1,8 +1,6 @@
 use std::collections::HashMap;
 use std::iter;
 
-use itertools::Itertools;
-
 use crate::StreamId;
 
 use super::allocation::AllocationInfo;
@@ -12,8 +10,12 @@ use super::allocation::Bandwidth;
 #[cfg(test)]
 mod tests;
 
-/// Frees up `needed` bandwidth from allocations at a lower priority.
-pub(super) fn take(mut allocations: Allocations, needed: u32) {
+/// Returns the changes needed to free up `needed` bandwidth takes from the
+/// largest streams first tries to leave slow streams lone
+///
+/// # Panics
+/// panics if there is not enough to free up
+pub(super) fn take(allocations: &Allocations, needed: u32) -> HashMap<StreamId, Bandwidth> {
     // visualize the allocations as a hillside. We need an amount of dirt.
     // This algorithm digs it up starting at the hills top. Eventually we
     // will have the right amount of dirt and be left with a flat topped
@@ -24,11 +26,10 @@ pub(super) fn take(mut allocations: Allocations, needed: u32) {
     //   the largest allocation forming the peak of the hill.
     // - The height in is the maximum bandwidth of a stream.
     // - The amount of dirt is the total bandwidth freed
-    let biggest_peak_idx = allocations
+    let biggest_peak = allocations
         .iter()
-        .enumerate()
-        .max_by_key(|(_, info)| info.allocated)
-        .map(|(idx, _)| idx);
+        .max_by_key(|info| info.allocated)
+        .map(|info| info.id);
     let planned_hill_size = allocations.total_bandwidth() - needed;
 
     // Guess the new maximum height for the mountain. This assumes the
@@ -61,17 +62,26 @@ pub(super) fn take(mut allocations: Allocations, needed: u32) {
     }
 
     let final_height = proposed_height;
-    for too_high in allocations.iter_mut_bandwidth_range(final_height..) {
-        too_high.allocated = final_height;
+
+    let mut freed = 0;
+    let mut needed_changes = HashMap::new();
+    for too_high in allocations.iter_bandwidth_range2(final_height..) {
+        let decrease = too_high.allocated - final_height;
+        needed_changes.insert(too_high.id, decrease);
+        freed += decrease;
     }
 
     // we may have a little dirt left, not enough to spread out though
     // give it to what was the biggest peak
-    let final_hill_size = allocations.total_bandwidth();
-    let left_over_dirt = final_hill_size - planned_hill_size;
-    if let Some(biggest_peak) = biggest_peak_idx.and_then(|index| allocations.get_mut(index)) {
-        biggest_peak.allocated += left_over_dirt
+    let left_over_dirt = freed - needed;
+    if let Some(needed_change) = biggest_peak
+        .as_ref()
+        .and_then(|id| needed_changes.get_mut(id))
+    {
+        *needed_change -= left_over_dirt
     }
+
+    needed_changes
 }
 
 pub(super) fn spread(allocations: Allocations, wished_for: u32) -> u32 {
@@ -283,17 +293,19 @@ fn divide_within_flat(flat: &mut FlatBottom, spread_out: &mut u32, to_divide: u3
 }
 
 /// Take the given Bandwidth (perbutation) and spread it out. Give streams that
-/// are steady (have not dropped their spread recently) and are farthest from
-/// their limit the most extra bandwidth.
+/// are steady (have not dropped their spread recently) the extra bandwidth
+/// first.
 ///
-/// Returns the bandwidth that could not be spread out
-pub(crate) fn spread_perbutation(
+/// Returns the changes that would spread out the perbutation and what would
+/// be left over.
+pub(crate) fn spread_prioritize_steadiest(
     mut to_spread: Bandwidth,
-    stream_info: Vec<(&StreamId, &super::BandwidthInfo)>,
-    allocations: &mut HashMap<StreamId, AllocationInfo>,
-) -> Bandwidth {
+    stream_info: &HashMap<StreamId, super::BandwidthInfo>,
+    allocations: &HashMap<StreamId, AllocationInfo>,
+) -> (HashMap<StreamId, Bandwidth>, Bandwidth) {
+    let mut final_perbutations = HashMap::new();
     let mut perbutation_per_stream = HashMap::new();
-    let mut ratios = ratios(stream_info);
+    let mut ratios = sorted_ratios(stream_info);
 
     let mut unused = 0f32;
     'done: while !ratios.is_empty() {
@@ -310,7 +322,7 @@ pub(crate) fn spread_perbutation(
                 const FLOAT_MARGIN: f32 = 0.0004; // correct for 0.99999993 != 1.0
                 if unused + FLOAT_MARGIN >= 1.0 {
                     for (id, perbutation) in perbutation_per_stream.drain() {
-                        allocations.get_mut(&id).expect("not removed").allocated += perbutation;
+                        assert!(final_perbutations.insert(id, perbutation).is_none());
                     }
                     to_spread = (unused + FLOAT_MARGIN).floor() as u32;
                     unused = (unused + FLOAT_MARGIN).fract();
@@ -329,11 +341,14 @@ pub(crate) fn spread_perbutation(
             // If the naive_increase is smaller then a byte but we have left_over
             // bandwidth to spread give it to the biggest stream then remove
             // that stream.
-            let alloc = allocations.get_mut(&id).expect("not removed");
+            let alloc = allocations.get(&id).expect("not removed");
             if let Some(increase) = increased_to_limit(naive_increase, alloc)
                 .or_else(|| biggest_fractional_increase(naive_increase, to_spread, biggest_share))
             {
-                alloc.allocated += increase;
+                final_perbutations
+                    .entry(id)
+                    .and_modify(|bw| *bw += increase)
+                    .or_insert(increase);
                 to_spread -= increase;
                 let to_remove = ratios
                     .iter()
@@ -354,14 +369,14 @@ pub(crate) fn spread_perbutation(
     }
 
     for (id, perbutation) in perbutation_per_stream {
-        allocations.get_mut(&id).expect("not removed").allocated += perbutation;
+        assert!(final_perbutations.insert(id, perbutation).is_none());
         to_spread -= perbutation;
     }
-    return to_spread;
+    (final_perbutations, to_spread)
 }
 
 /// Check if the increase can be applied or the stream is saturated at its upstream limit
-fn increased_to_limit(naive_increase: f32, alloc: &mut AllocationInfo) -> Option<Bandwidth> {
+fn increased_to_limit(naive_increase: f32, alloc: &AllocationInfo) -> Option<Bandwidth> {
     if naive_increase.floor() as Bandwidth >= alloc.until_limit() {
         let increase = alloc.until_limit();
         Some(increase)
@@ -383,22 +398,26 @@ fn biggest_fractional_increase(
     }
 }
 
-fn ratios(mut stream_info: Vec<(&StreamId, &super::BandwidthInfo)>) -> Vec<(StreamId, f32)> {
+fn sorted_ratios(stream_info: &HashMap<StreamId, super::BandwidthInfo>) -> Vec<(StreamId, f32)> {
     let best = stream_info
         .iter()
-        .position_max_by(|a, b| a.1.steadyness.total_cmp(&b.1.steadyness))
+        .max_by(|a, b| a.1.steadyness.total_cmp(&b.1.steadyness))
         .expect("len > 0");
-    let best = stream_info.swap_remove(best);
     let spread_factor = 6.0;
     // lower is more spread out
 
     let mut ratios: Vec<(StreamId, f32)> = iter::once((*best.0, 1.0))
-        .chain(stream_info.into_iter().map(|(id, item)| {
-            let dist_to_best = best.1.steadyness - item.steadyness;
-            let mul = dist_to_best * spread_factor;
-            let ratio = (1.0 - mul).max(0.05);
-            (*id, ratio)
-        }))
+        .chain(
+            stream_info
+                .iter()
+                .filter(|(id, _)| *id != best.0)
+                .map(|(id, item)| {
+                    let dist_to_best = best.1.steadyness - item.steadyness;
+                    let mul = dist_to_best * spread_factor;
+                    let ratio = (1.0 - mul).max(0.05);
+                    (*id, ratio)
+                }),
+        )
         .collect();
     ratios.sort_unstable_by(|(_, a), (_, b)| b.total_cmp(&a));
     assert!(ratios.iter().all(|(_, ratio)| *ratio > 0.0));

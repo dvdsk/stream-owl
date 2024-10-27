@@ -115,16 +115,19 @@ impl<'a> Allocations<'a> {
             .filter(move |info| info.allocated >= range.start)
             .filter(move |info| info.allocated < range.end)
     }
-    pub fn iter_mut_bandwidth_range(
-        &mut self,
+    pub fn iter_bandwidth_range2(
+        &self,
         range: std::ops::RangeFrom<u32>,
-    ) -> impl Iterator<Item = &mut AllocationInfo> {
+    ) -> impl Iterator<Item = &AllocationInfo> {
         self.list
-            .iter_mut()
+            .iter()
             .filter(move |info| info.allocated >= range.start)
     }
     pub fn iter(&self) -> impl Iterator<Item = &AllocationInfo> {
         self.list.iter()
+    }
+    pub fn iter_mut(&mut self) -> impl Iterator<Item = &mut AllocationInfo> {
+        self.list.iter_mut()
     }
     pub fn get_mut(&mut self, index: usize) -> Option<&mut AllocationInfo> {
         self.list.get_mut(index)
@@ -164,14 +167,6 @@ impl<'a> Allocations<'a> {
             .min_by_key(|(_, info)| info.allocated)
             .map(|(idx, _)| idx)
         else {
-            return None;
-        };
-
-        Some(self.list.swap_remove(index))
-    }
-    #[must_use]
-    pub fn remove_placeholder(&mut self) -> Option<AllocationInfo> {
-        let Some(index) = self.list.iter().position(|item| item.is_placeholder()) else {
             return None;
         };
 

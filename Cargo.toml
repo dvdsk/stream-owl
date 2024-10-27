@@ -43,23 +43,11 @@ console-subscriber = "0.2.0"
 rand = "0.8"
 governor = "0.6.0"
 slotmap = "1.0.7"
-itertools = "0.13.0"
 
 [dev-dependencies]
 stream-owl-test-support = { path = "stream-owl-test-support" }
 tracing-subscriber = "0.3.18"
 criterion = { version = "0.4", features = ["html_reports"] }
-# tracing-flame = "0.2"
-# opentelemetry_sdk = "0.21.2"
-# opentelemetry-jaeger = { version = "0.20.0", features = ["rt-tokio", "isahc_collector_client"] }
-# opentelemetry = "0.21.0"
-# tracing-opentelemetry = "0.22.0"
-# axum = { version = "0.7.4", features = ["tokio", "http1"] }
-# axum-macros = "0.4.0"
-# tower = "0.4"
-# tower-http = { version = "0.5", features = ["fs", "trace"] }
-# tracing-subscriber = { version = "0.3.18", features = ["env-filter"] }
-# tempfile = "3"
 
 [[bench]]
 name = "stream_bench"

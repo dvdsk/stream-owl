@@ -24,14 +24,18 @@ mod take {
         let mut drain = HashMap::new();
         let list = existing_bw.into_iter().map(info).collect();
 
-        {
+        let changes = {
             let allocations = Allocations::new(list, &mut drain);
-            take(allocations, needed);
+            let changes = take(&allocations, needed);
+            changes
+        };
+
+        for (id, change) in changes {
+            drain.entry(id).and_modify(|info| info.allocated -= change);
         }
 
         let mut list: Vec<_> = drain.into_iter().collect();
         list.sort_by_key(|(id, _)| *id);
-        dbg!(&list);
         let list: Vec<_> = list.into_iter().map(|(_, info)| info.allocated).collect();
         assert_eq!(list.as_slice(), &resulting_bw);
         assert_eq!(
@@ -229,27 +233,19 @@ mod spread_perbutation {
                 .map(|info| (info.id, info)),
         );
 
-        let increasing_steadyness: Vec<_> = ids
+        let bw_info: HashMap<_, _> = ids
             .clone()
             .into_iter()
             .zip(existing_bw.clone().into_iter().map(bw_info))
             .collect();
-        let increasing_steadyness_borrow: Vec<_> = increasing_steadyness
-            .iter()
-            .map(|(id, info)| (id, info))
-            .collect();
 
-        // is sorted
-        increasing_steadyness_borrow.iter().fold(0, |last, curr| {
-            assert!(curr.1.curr >= last);
-            curr.1.curr
-        });
-
-        let left_over =
-            spread_perbutation(perbutation, increasing_steadyness_borrow, &mut allocations);
+        let (changes, left_over) =
+            spread_prioritize_steadiest(perbutation, &bw_info, &mut allocations);
+        dbg!(&changes);
         let bandwidth_increases: Vec<_> = ids
             .into_iter()
-            .map(|id| allocations.get(&id).unwrap().allocated - 100)
+            .map(|id| changes.get(&id).unwrap())
+            .copied()
             .collect();
         assert_eq!(bandwidth_increases.as_slice(), &expected_resulting_bw);
         assert_eq!(
