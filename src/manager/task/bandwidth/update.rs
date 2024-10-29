@@ -2,13 +2,13 @@ use std::collections::HashMap;
 use std::sync::atomic::Ordering;
 use std::time::Instant;
 
-use tokio::task::AbortHandle;
-
 use super::allocation::Bandwidth;
-use super::{divide, BandwidthInfo, Change, Controller, Investigation, Priority};
+use super::{
+    divide, BandwidthInfo, Change, Controller, Investigation, LimitBandwidthById, Priority,
+};
 use crate::manager::task::bandwidth::allocation::{AllocationInfo, Limit};
 use crate::manager::task::bandwidth::NextInvestigation;
-use crate::{RangeCallback, StreamHandle, StreamId};
+use crate::StreamId;
 
 impl Controller {
     pub(super) fn bandwidth_update(&mut self, stream: StreamId, new: usize) {
@@ -44,10 +44,8 @@ impl Controller {
             });
     }
 
-    pub(super) async fn sweep<R: RangeCallback>(
-        &mut self,
-        handles: &mut HashMap<StreamId, (AbortHandle, StreamHandle<R>)>,
-    ) {
+    pub(super) async fn sweep(&mut self, handles: &impl LimitBandwidthById) {
+        dbg!("----sweep----");
         use Investigation as I;
         if self
             .bandwidth_by_id
@@ -71,7 +69,7 @@ impl Controller {
         let prev_bw = self.previous_sweeps_bw.front().copied();
         let curr_bw: Bandwidth = bw_tomato.values().sum();
 
-        match &mut self.investigation {
+        match dbg!(&mut self.investigation) {
             I::Spoiled => return,
             I::StreamLimit { ref stream, .. } => {
                 if let Some((bw, allocation)) = self
@@ -107,7 +105,7 @@ impl Controller {
                     self.remove_bw_at_and_below(Priority::highest(), lost);
                 }
 
-                match self.next_investigation.next() {
+                match dbg!(self.next_investigation.next()) {
                     NextInvestigation::TotalBandwidth => {
                         if self.bandwidth_lim.got_space(curr_bw) {
                             self.investigate_total_limit();
@@ -184,16 +182,23 @@ impl Controller {
     pub(super) fn investigate_stream_limit(&mut self) {
         assert!(self.allocations.len() > 0);
 
+        struct ToCheck {
+            id: StreamId,
+            allocated: Bandwidth,
+        }
+
         // try every stream while finding the next stream to check
-        let to_check: Option<&mut AllocationInfo> = None;
+        let mut to_check: Option<ToCheck> = None;
         for _ in 0..self.orderd_streamids.len() {
             let index = (self.last_index_checked + 1) % self.allocations.len();
             self.last_index_checked = index;
 
             let stream_id = self.orderd_streamids[index];
-            let to_check = self.allocations.get_mut(&stream_id);
-
-            if to_check.is_some() {
+            if let Some(info) = self.allocations.get(&stream_id) {
+                to_check = Some(ToCheck {
+                    id: stream_id,
+                    allocated: info.allocated,
+                });
                 break;
             }
         }
@@ -215,14 +220,15 @@ impl Controller {
             changes,
             stream: to_check.id,
         };
+        dbg!(&self.investigation);
         self.investigation.apply(&mut self.allocations);
     }
 
     /// In case of overload the drop `super::Update` message be missed, this is
     /// a backup mechanic that does not rely on the drop `super::Update`
-    pub(super) async fn remove_allocs_that_should_have_been_dropped<R: RangeCallback>(
+    pub(super) async fn remove_allocs_that_should_have_been_dropped(
         &mut self,
-        handles: &mut HashMap<StreamId, (AbortHandle, StreamHandle<R>)>,
+        handles: &impl LimitBandwidthById,
     ) {
         let should_be_dropped: Vec<_> = self
             .allocations

@@ -12,14 +12,32 @@ use tokio::time;
 
 mod allocation;
 mod divide;
+#[cfg(test)]
+mod test;
 mod update;
 
 use crate::manager::stream::StreamConfig;
 use crate::manager::task::bandwidth::allocation::Limit;
 use crate::network::BandwidthAllowed;
-use crate::{BandwidthLimit, IdBandwidthCallback, RangeCallback, StreamHandle, StreamId};
+use crate::{BandwidthLimit, IdBandwidthCallback, StreamHandle, StreamId};
 
 use allocation::{AllocationInfo, Allocations, Bandwidth};
+
+pub trait LimitBandwidthById {
+    async fn limit_bandwidth(&self, id: StreamId, limit: BandwidthLimit);
+}
+
+impl<R: crate::RangeCallback> LimitBandwidthById
+    for HashMap<StreamId, (AbortHandle, StreamHandle<R>)>
+{
+    async fn limit_bandwidth(&self, id: StreamId, limit: BandwidthLimit) {
+        let Some((_, handle)) = self.get(&id) else {
+            return;
+        };
+
+        handle.limit_bandwidth(limit).await
+    }
+}
 
 #[derive(Debug, Copy, Clone, Default, PartialEq, Eq, Hash)]
 #[repr(usize)]
@@ -116,11 +134,13 @@ struct BandwidthInfo {
     pub newest_update: Instant,
 }
 
+#[derive(Debug)]
 pub enum Change {
     Added(Bandwidth),
     Removed(Bandwidth),
 }
 
+#[derive(Debug)]
 pub enum Investigation {
     StreamLimit {
         changes: HashMap<StreamId, Change>,
@@ -129,9 +149,11 @@ pub enum Investigation {
     TotalLimit {
         changes: HashMap<StreamId, Change>,
     },
-    /// no increase or decrease occurred since last sweep
+    /// nothing happened, any bandwidth decrease it the result of:
+    ///  - Total bandwidth decreasing
+    ///  - A stream getting a tighter upstream limit
     Neutral,
-    /// an increase or decrease occurred since last sweep
+    /// a stream was removed or added
     /// so we cannot use this as base measurement
     Spoiled,
 }
@@ -178,6 +200,7 @@ impl Investigation {
     }
 }
 
+#[derive(Debug)]
 enum NextInvestigation {
     TotalBandwidth,
     StreamBandwidth,
@@ -231,9 +254,9 @@ impl Controller {
         (external_update, next_sweep).race().await
     }
 
-    pub(super) async fn handle_update<R: RangeCallback>(
+    pub(super) async fn handle_update(
         &mut self,
-        handles: &mut HashMap<StreamId, (AbortHandle, StreamHandle<R>)>,
+        handles: &impl LimitBandwidthById,
         update: Update,
     ) {
         match update {
@@ -290,11 +313,7 @@ impl Controller {
 
     /* TODO: Similar thing for paused streams unpause would then send
      * trigger stealing taking back the bandwidth <03-03-24, dvdsk> */
-    pub(crate) async fn remove<R: RangeCallback>(
-        &mut self,
-        id: StreamId,
-        handles: &mut HashMap<StreamId, (AbortHandle, StreamHandle<R>)>,
-    ) {
+    pub(crate) async fn remove(&mut self, id: StreamId, handles: &impl LimitBandwidthById) {
         let pos = self
             .orderd_streamids
             .iter()
@@ -315,11 +334,11 @@ impl Controller {
     }
 
     #[must_use]
-    pub(crate) async fn register<R: RangeCallback>(
+    pub(crate) async fn register(
         &mut self,
         id: StreamId,
         mut config: StreamConfig,
-        handles: &mut HashMap<StreamId, (AbortHandle, StreamHandle<R>)>,
+        handles: &impl LimitBandwidthById,
     ) -> (StreamConfig, allocation::AllocationGuard) {
         use BandwidthAllowed as B;
         let init_limit = match config.bandwidth {
@@ -347,21 +366,18 @@ impl Controller {
 
         self.orderd_streamids.push(id);
         self.allocations.insert(id, info);
-        if let Some(list) = self.allocated_by_prio.get_mut(&config.priority) {
-            list.insert(id);
-        } else {
-            self.allocated_by_prio
-                .insert(config.priority, HashSet::from([id]));
-        }
+        self.allocated_by_prio
+            .entry(config.priority)
+            .and_modify(|list| {
+                list.insert(id);
+            })
+            .or_insert(HashSet::from([id]));
 
         self.apply_new_limits(handles).await;
         (config, guard)
     }
 
-    async fn apply_new_limits<R: RangeCallback>(
-        &self,
-        handles: &mut HashMap<StreamId, (AbortHandle, StreamHandle<R>)>,
-    ) {
+    async fn apply_new_limits(&self, handles: &impl LimitBandwidthById) {
         for (
             id,
             AllocationInfo {
@@ -372,14 +388,9 @@ impl Controller {
             .iter()
             .filter(|(_, info)| info.allocated != info.curr_io_limit)
         {
-            let Some((_, handle)) = handles.get(&id) else {
-                continue;
-            };
-            handle
-                .limit_bandwidth(BandwidthLimit(
-                    NonZeroU32::new(*new_bw).expect("todo handle unlimited dl speed"),
-                ))
-                .await
+            // TODO handle unlimited download speed
+            let limit = BandwidthLimit(NonZeroU32::new(*new_bw).unwrap());
+            handles.limit_bandwidth(*id, limit).await
         }
     }
 

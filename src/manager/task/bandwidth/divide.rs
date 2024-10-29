@@ -19,6 +19,8 @@ pub(super) fn take<'a>(
     allocations: impl Iterator<Item = &'a AllocationInfo> + Clone,
     needed: u32,
 ) -> HashMap<StreamId, Bandwidth> {
+    let allocs: Vec<_> = allocations.clone().collect();
+    dbg!(allocs, needed);
     // visualize the allocations as a hillside. We need an amount of dirt.
     // This algorithm digs it up starting at the hills top. Eventually we
     // will have the right amount of dirt and be left with a flat topped

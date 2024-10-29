@@ -63,7 +63,7 @@ where
         let callbacks = self.callbacks.wrap(id);
         let (config, alloc_guard) = self
             .bandwidth
-            .register(id, config, &mut self.stream_handles)
+            .register(id, config, &self.stream_handles)
             .await;
         let (handle, stream_task) = async move {
             let (handle, stream_task) = config.start(url, cmd_tx, callbacks).await?;
@@ -150,7 +150,7 @@ pub(super) async fn run<L: IdLogCallback, B: IdBandwidthCallback, R: IdRangeCall
             Res::Bandwidth(update) => {
                 state
                     .bandwidth
-                    .handle_update(&mut state.stream_handles, update)
+                    .handle_update(&state.stream_handles, update)
                     .await
             }
             Res::NewCmd(AddStream {
@@ -159,7 +159,7 @@ pub(super) async fn run<L: IdLogCallback, B: IdBandwidthCallback, R: IdRangeCall
                 url,
             }) => state.add_stream(handle_tx, config, url).await.unwrap(),
             Res::NewCmd(CancelStream(id)) => {
-                state.bandwidth.remove(id, &mut state.stream_handles).await;
+                state.bandwidth.remove(id, &state.stream_handles).await;
                 if let Some((abort, _)) = state.stream_handles.remove(&id) {
                     abort.abort();
                 }

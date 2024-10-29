@@ -185,6 +185,8 @@ mod divide_new {
 }
 
 mod spread_perbutation {
+    use std::time::Instant;
+
     use crate::manager::task::bandwidth::BandwidthInfo;
 
     use super::*;
@@ -208,8 +210,11 @@ mod spread_perbutation {
 
     fn bw_info(entry: TestEntry) -> BandwidthInfo {
         BandwidthInfo {
-            curr: 100,
             steadyness: entry.steadyness,
+            since_last_sweep: Vec::new(),
+            prev_normal_sweep: None,
+            this_sweep: 100,
+            newest_update: Instant::now(),
         }
     }
 
