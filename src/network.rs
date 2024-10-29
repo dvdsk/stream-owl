@@ -105,7 +105,7 @@ pub(crate) enum BandwidthAllowed {
     UnLimited,
 }
 impl BandwidthAllowed {
-    pub(crate) fn could_increase(&self, curr_bw: u32) -> bool {
+    pub(crate) fn got_space(&self, curr_bw: u32) -> bool {
         match self {
             BandwidthAllowed::Limited(limit) => limit.0.get() < curr_bw,
             BandwidthAllowed::UnLimited => true,

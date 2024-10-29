@@ -109,23 +109,85 @@ impl<B: IdBandwidthCallback> IdBandwidthCallback for WrappedCallback<B> {
 
 #[derive(Debug)]
 struct BandwidthInfo {
-    // last known bandwidth
-    curr: Bandwidth,
-    // number between 0 and 1. Higher means the stream has been close to its limit for longer
-    steadyness: f32,
+    pub since_last_sweep: Vec<Bandwidth>,
+    pub steadyness: f32,
+    pub prev_normal_sweep: Option<Bandwidth>,
+    pub this_sweep: Bandwidth,
+    pub newest_update: Instant,
 }
 
-impl BandwidthInfo {
-    fn curr(&self) -> Bandwidth {
-        self.curr
-    }
-    fn update(&mut self, now_at: Bandwidth, limit_was: Bandwidth) {
-        self.curr = now_at;
+pub enum Change {
+    Added(Bandwidth),
+    Removed(Bandwidth),
+}
 
-        let distance = now_at as f32 / limit_was as f32;
-        let distance = distance.max(1.0);
-        self.steadyness = self.steadyness * 0.9 + distance * 0.1;
-        self.steadyness = self.steadyness.max(1.0);
+pub enum Investigation {
+    StreamLimit {
+        changes: HashMap<StreamId, Change>,
+        stream: StreamId,
+    },
+    TotalLimit {
+        changes: HashMap<StreamId, Change>,
+    },
+    /// no increase or decrease occurred since last sweep
+    Neutral,
+    /// an increase or decrease occurred since last sweep
+    /// so we cannot use this as base measurement
+    Spoiled,
+}
+
+impl Investigation {
+    fn apply(&self, allocations: &mut HashMap<StreamId, AllocationInfo>) {
+        use Investigation::{StreamLimit, TotalLimit};
+        let (StreamLimit { changes, .. } | TotalLimit { changes }) = self else {
+            return;
+        };
+
+        for (id, change) in changes {
+            let allocation = allocations
+                .get_mut(id)
+                .expect("allocations should not have changed since changes where made");
+            match change {
+                Change::Added(bandwidth) => allocation.allocated += bandwidth,
+                Change::Removed(bandwidth) => allocation.allocated -= bandwidth,
+            }
+        }
+    }
+
+    fn undo(&mut self, allocations: &mut HashMap<StreamId, AllocationInfo>) {
+        match self {
+            Self::Neutral | Self::Spoiled => (),
+            Self::StreamLimit { changes, .. } | Self::TotalLimit { changes } => {
+                for (id, change) in changes {
+                    let Some(allocation) = allocations.get_mut(id) else {
+                        continue;
+                    };
+                    match change {
+                        Change::Added(bw) => allocation.allocated -= *bw,
+                        Change::Removed(bw) => allocation.allocated += *bw,
+                    }
+                }
+                *self = Self::Neutral;
+            }
+        }
+    }
+
+    fn spoil(&mut self, allocations: &mut HashMap<StreamId, AllocationInfo>) {
+        self.undo(allocations);
+        *self = Self::Spoiled;
+    }
+}
+
+enum NextInvestigation {
+    TotalBandwidth,
+    StreamBandwidth,
+}
+impl NextInvestigation {
+    fn next(&self) -> NextInvestigation {
+        match self {
+            Self::TotalBandwidth => Self::StreamBandwidth,
+            Self::StreamBandwidth => Self::TotalBandwidth,
+        }
     }
 }
 
@@ -135,15 +197,17 @@ pub(crate) struct Controller {
     bandwidth_lim: BandwidthAllowed,
     previous_sweeps_bw: VecDeque<Bandwidth>,
     previous_total_bw_perbutation: Option<Bandwidth>,
+    /// bandwidth that streams where using that where
+    /// removed since the last sweep
+    last_sweep: Instant,
     next_sweep: Instant,
-    next_check_available_bw: bool,
+    next_investigation: NextInvestigation,
 
+    investigation: Investigation,
     /// last stream checked for more bandwidth in list `bandwidth_by_id`
     last_index_checked: usize,
     /// list of StreamId in some order
     bandwidth_by_id: HashMap<StreamId, BandwidthInfo>,
-
-    stream_perbutations: HashMap<StreamId, Bandwidth>,
 
     allocated_by_prio: BTreeMap<Priority, HashSet<StreamId>>,
     orderd_streamids: Vec<StreamId>,
@@ -178,7 +242,8 @@ impl Controller {
             Update::NewStreamLimit { id, bandwidth } => todo!(),
             Update::NewGlobalLimit { bandwidth } => todo!(),
             Update::Scheduled => {
-                self.remove_allocs_that_failed_to_do_so(handles).await;
+                self.remove_allocs_that_should_have_been_dropped(handles)
+                    .await;
                 self.sweep(handles).await;
                 // TODO: Should probably be dynamic <dvdsk>
                 self.next_sweep = Instant::now() + Duration::from_millis(200);
@@ -208,7 +273,6 @@ impl Controller {
                 bandwidth_lim,
                 next_sweep: Instant::now() + Duration::ZERO,
                 previous_sweeps_bw: VecDeque::new(),
-                next_check_available_bw: true,
                 previous_total_bw_perbutation: None,
 
                 last_index_checked: 0,
@@ -216,7 +280,9 @@ impl Controller {
                 bandwidth_by_id: HashMap::new(),
                 allocated_by_prio: BTreeMap::new(),
                 allocations: HashMap::new(),
-                stream_perbutations: HashMap::new(),
+                investigation: Investigation::Neutral,
+                last_sweep: Instant::now(),
+                next_investigation: NextInvestigation::TotalBandwidth,
             },
             bandwidth,
         )
@@ -241,11 +307,10 @@ impl Controller {
         }
 
         self.bandwidth_by_id.remove(&id);
-
         let Some(info) = info else { return };
 
+        self.investigation.spoil(&mut self.allocations);
         self.divide_new_bandwidth(info.allocated);
-        /* TODO: needs to skip paused streams <03-03-24, dvdsk> */
         self.apply_new_limits(handles).await;
     }
 
@@ -399,9 +464,5 @@ impl Controller {
             })
             .collect();
         Allocations::new(list, &mut self.allocations)
-    }
-
-    fn note_stream_limits(&self) {
-        todo!()
     }
 }
