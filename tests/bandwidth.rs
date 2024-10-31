@@ -1,4 +1,4 @@
-#![recursion_limit = "256"]
+#![recursion_limit = "200"]
 
 use std::io::Read;
 use std::num::NonZeroUsize;

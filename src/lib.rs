@@ -1,4 +1,4 @@
-#![recursion_limit = "150"]
+#![recursion_limit = "200"]
 mod manager;
 mod network;
 mod reader;

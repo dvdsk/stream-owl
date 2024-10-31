@@ -41,6 +41,13 @@ pub struct StreamBuilder<const STORAGE_SET: bool, L, B, R> {
 }
 
 impl StreamBuilder<false, Placeholder, Placeholder, Placeholder> {
+    pub fn try_new(
+        url: &str,
+    ) -> Result<StreamBuilder<false, Placeholder, Placeholder, Placeholder>, http::uri::InvalidUri>
+    {
+        let url: http::Uri = url.try_into()?;
+        Ok(Self::new(url))
+    }
     pub fn new(url: http::Uri) -> StreamBuilder<false, Placeholder, Placeholder, Placeholder> {
         StreamBuilder {
             url,

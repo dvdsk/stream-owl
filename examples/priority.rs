@@ -1,3 +1,4 @@
+#![recursion_limit = "256"]
 use futures::FutureExt;
 use futures_concurrency::future::Race;
 use std::io::Read;
