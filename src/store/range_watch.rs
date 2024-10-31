@@ -104,7 +104,7 @@ impl<R: RangeCallback> Sender<R> {
         }
 
         tracing::trace!("sending range update: {update:?}");
-        if let Err(_) = self.watch_sender.send(update.clone()) {
+        if self.watch_sender.send(update.clone()).is_err() {
             tracing::debug!("Could not send new range, receiver dropped");
         }
         self.range_callback.perform(update);

@@ -62,7 +62,7 @@ impl ChunkSize {
 }
 
 fn update_dynamic(max_size: Option<usize>, bandwidth: &AtomicUsize) -> usize {
-    let bytes_per_second = bandwidth.load(Ordering::Relaxed) * 1;
+    let bytes_per_second = bandwidth.load(Ordering::Relaxed);
 
     // aim for a new http range request every 2 seconds
     let new_optimal = bytes_per_second * 2;

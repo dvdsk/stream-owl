@@ -29,15 +29,15 @@ pub struct StreamConfig {
 }
 
 impl StreamConfig {
-    pub fn to_unlimited_mem(mut self) -> StreamConfig {
+    pub fn store_in_mem(mut self) -> StreamConfig {
         self.storage = StorageChoice::MemUnlimited;
         self
     }
-    pub fn to_limited_mem(mut self, max_size: usize) -> StreamConfig {
+    pub fn store_part_in_mem(mut self, max_size: usize) -> StreamConfig {
         self.storage = StorageChoice::MemLimited(max_size);
         self
     }
-    pub fn to_disk(mut self, path: PathBuf) -> StreamConfig {
+    pub fn store_on_fs(mut self, path: PathBuf) -> StreamConfig {
         self.storage = StorageChoice::Disk(path);
         self
     }

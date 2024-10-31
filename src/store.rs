@@ -265,9 +265,6 @@ impl Store {
     }
 }
 
-#[derive(Debug)]
-pub(crate) struct SeekInProgress;
-
 #[derive(thiserror::Error, Debug)]
 pub(crate) enum ReadError {
     #[error(transparent)]

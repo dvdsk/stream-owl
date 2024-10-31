@@ -76,11 +76,11 @@ where
 
         let abort_handle = self.stream_tasks.spawn(stream_task);
         self.stream_handles.insert(id, (abort_handle, handle));
-        if let Err(_) = handle_tx.send(ManagedHandle {
+        if handle_tx.send(ManagedHandle {
             id,
             cmd_tx: self.cmd_tx.clone(),
             bandwidth_tx: self.bandwidth.get_tx(),
-        }) {
+        }).is_err() {
             trace!("add_stream canceld on user side");
             // dropping the handle here will cancel the streams task
         }
@@ -118,8 +118,14 @@ where
 
         // handle could be dropped while operation is running
         let _ignore_err = match op {
-            HandleOp::Pause { tx, .. } => tx.send(handle.pause().await),
-            HandleOp::Unpause { tx, .. } => tx.send(handle.unpause().await),
+            HandleOp::Pause { tx, .. } => {
+                handle.pause().await;
+                tx.send(())
+            }
+            HandleOp::Unpause { tx, .. } => {
+                handle.unpause().await;
+                tx.send(())
+            }
             HandleOp::TryGetReader { tx, .. } => tx.send(handle.try_get_reader()).map_err(|_| ()),
             HandleOp::MigrateToLimitedMemBackend { tx, size, .. } => tx
                 .send(handle.migrate_to_limited_mem_backend(size).await)

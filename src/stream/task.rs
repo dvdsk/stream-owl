@@ -35,6 +35,7 @@ pub(crate) enum StreamDone {
 pub struct StreamCanceld;
 
 #[instrument(ret, err, skip_all)]
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn restarting_on_seek<L: LogCallback, B: BandwidthCallback, R: RangeCallback>(
     url: http::Uri,
     mut target: StreamTarget<B, R>,
@@ -71,6 +72,7 @@ pub(crate) async fn restarting_on_seek<L: LogCallback, B: BandwidthCallback, R: 
 }
 
 #[instrument(ret, err, skip_all)]
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn new<L: LogCallback, B: BandwidthCallback, R: RangeCallback>(
     url: &http::Uri,
     target: &mut StreamTarget<B, R>,
@@ -116,16 +118,7 @@ pub(crate) async fn new<L: LogCallback, B: BandwidthCallback, R: RangeCallback>(
                 }
             }
             StreamingClient::RangesRefused(client) => {
-                match stream_all(
-                    client,
-                    &stream_size,
-                    seek_rx,
-                    target,
-                    retry,
-                    timeout,
-                )
-                .await
-                {
+                match stream_all(client, stream_size, seek_rx, target, retry, timeout).await {
                     AllRes::Error(e) => return Err(e),
                     AllRes::StreamDone(reason) => return Ok(reason),
                     AllRes::SeekPerformed(new_client) => new_client,

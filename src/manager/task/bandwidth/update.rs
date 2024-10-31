@@ -142,7 +142,7 @@ impl Controller {
             .copied()
             .expect("just set in fn sweep");
         let Some(before) = self.previous_sweeps_bw.get(2).copied() else {
-            return after / 1;
+            return after;
         };
 
         let target_increase = self
@@ -155,9 +155,9 @@ impl Controller {
 
         let increase = 0.9 * (after - before) as f32;
         if increase as u32 >= target_increase {
-            return target_increase * 2;
+            target_increase * 2
         } else {
-            return target_increase / 2;
+            target_increase / 2
         }
     }
 
@@ -173,7 +173,7 @@ impl Controller {
         let (changes, _left_over) = divide::spread_prioritize_steadiest(
             perbutation,
             &self.bandwidth_by_id,
-            &mut self.allocations,
+            &self.allocations,
         );
 
         let changes = changes
@@ -187,7 +187,7 @@ impl Controller {
     /// make a small perbutation to the bandwidth division to find
     /// if a stream has more upstream bandwidth
     pub(super) fn investigate_stream_limit(&mut self) {
-        assert!(self.allocations.len() > 0);
+        assert!(!self.allocations.is_empty());
 
         struct ToCheck {
             id: StreamId,
@@ -216,7 +216,7 @@ impl Controller {
 
         let five_percent_of_allocation = (to_check.allocated as f32 * 0.05) as Bandwidth;
         let perbutation = five_percent_of_allocation;
-        let list = self.allocations.iter().map(|(_, info)| info);
+        let list = self.allocations.values();
 
         let mut changes: HashMap<_, _> = divide::take(list, perbutation)
             .into_iter()

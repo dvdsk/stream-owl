@@ -16,8 +16,8 @@ use tracing::instrument;
 
 use super::{error, FutureTimeout};
 use super::{error::Error, Cookies};
-use crate::BandwidthCallback;
 use crate::network::{BandwidthLim, Network};
+use crate::BandwidthCallback;
 
 mod throttle_io;
 use throttle_io::ThrottlableIo;
@@ -60,16 +60,15 @@ impl<B: BandwidthCallback> BandwidthMonitor<B> {
         let now = Instant::now();
         let elapsed = now.saturating_duration_since(self.last_update_at);
 
-        // do not update more then once per 200ms
+        // do not update more than once per 200 milliseconds
         if elapsed < Duration::from_millis(200) {
             return;
         }
 
-        // in 0.001 bytes per millisec aka bytes/sec
+        // in 0.001 bytes per millisecond aka bytes/second
         let curr_bandwidth = self.read_since_last_report * 1000 / (elapsed.as_millis() as usize);
         if self.last_reported_bandwidth().abs_diff(curr_bandwidth) > margin {
-            let _ignore_no_space_left_error =
-                self.report.perform(curr_bandwidth);
+            self.report.perform(curr_bandwidth);
             self.set_last_reported_bandwidth(curr_bandwidth);
             self.last_update_at = now;
             self.read_since_last_report = 0;
@@ -95,7 +94,7 @@ impl Connection {
         timeout: Duration,
     ) -> Result<Self, Error> {
         let bandwidth_monitor = BandwidthMonitor::new(bandwidth_callback, bandwidth);
-        let tcp = new_tcp_stream(&url, &restriction).await?;
+        let tcp = new_tcp_stream(url, restriction).await?;
         let io = ThrottlableIo::new(tcp, bandwidth_lim, bandwidth_monitor)
             .map_err(Error::SocketConfig)?;
         let (request_sender, conn) = http1::handshake(io)
@@ -209,8 +208,8 @@ async fn new_tcp_stream(
 
     let socket = TcpSocket::new_v4().map_err(Error::SocketCreation)?;
     socket.bind(bind_addr).map_err(Error::Restricting)?;
-    Ok(socket
+    socket
         .connect(connect_addr)
         .await
-        .map_err(Error::Connecting)?)
+        .map_err(Error::Connecting)
 }

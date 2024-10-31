@@ -5,8 +5,10 @@ pub trait VecDequeExt {
 }
 
 impl VecDequeExt for VecDeque<u8> {
-    /// Copies from this vecdeque into a provided slice in at most two memcopys.
-    /// You can provide an optional start to skip the first n_items in the vecdeque.
+    /// Copies from this VecDeque into a provided slice in at most two memcopys.
+    /// You can provide an optional start to skip the first n_items in the VecDeque.
+    ///
+    /// returns number of bytes copied
     ///
     /// # Panic:
     /// When `start` is beyond self.
@@ -29,9 +31,8 @@ impl VecDequeExt for VecDeque<u8> {
             let n_to_copy = back.len() - start;
             let n_to_copy = n_to_copy.min(target.len());
             target[..n_to_copy].copy_from_slice(&back[start..start + n_to_copy]);
-            let n_copied = n_to_copy;
 
-            n_copied
+            n_to_copy
         }
     }
 }

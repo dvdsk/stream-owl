@@ -63,6 +63,7 @@ impl Progress {
             .read(true)
             .write(true)
             .create(true)
+            .append(true)
             .open(progress_path(file_path))
             .await
             .map_err(Error::OpeningFile)?;

@@ -42,7 +42,7 @@ pub(crate) fn correct_for_capacity(
     capacity: &CapacityBounds,
 ) -> RangeSet<u64> {
     let CapacityBounds::Limited(capacity) = capacity else {
-        return RangeSet::from_iter(needed_from_src.into_iter());
+        return RangeSet::from_iter(needed_from_src);
     };
 
     let mut free_capacity = capacity.get();

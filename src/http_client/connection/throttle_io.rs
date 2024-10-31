@@ -23,7 +23,7 @@ use tokio::net::TcpStream;
 use tracing::{debug, instrument, trace};
 
 use crate::network::{BandwidthAllowed, BandwidthLim, BandwidthRx};
-use crate::{BandwidthLimit, BandwidthCallback};
+use crate::{BandwidthCallback, BandwidthLimit};
 
 mod tcpstream_ext;
 use tcpstream_ext::TcpStreamExt;
@@ -127,10 +127,10 @@ impl<B> ThrottlableIo<B> {
         this.inner.set_send_buf_size(send_buf_size)?;
 
         let burst_size = limit.optimal_burst_size(send_buf_size);
-        let limit = NonZeroU32::new(limit.0.get() as u32).unwrap();
+        let limit = NonZeroU32::new(limit.0.get()).unwrap();
         let quota = Quota::per_second(limit).allow_burst(burst_size);
         debug!("New ratelimiter quota: {quota:?}, socket send_buf size is: {send_buf_size}");
-        let new = RateLimiter::direct_with_clock(quota, MonotonicClock::default());
+        let new = RateLimiter::direct_with_clock(quota, MonotonicClock);
         *this.limiter = Some(new);
         Ok(())
     }
@@ -170,9 +170,10 @@ impl<B> ThrottlableIo<B> {
             return;
         };
 
-        if let Err(until) = limiter.check_n(n).expect(&format!(
-            "There should always be enough capacity, needed: {n}"
-        )) {
+        if let Err(until) = limiter
+            .check_n(n)
+            .unwrap_or_else(|_| panic!("There should always be enough capacity, needed: {n}"))
+        {
             let next_call_allowed = until.earliest_possible();
             self.still_pending_bytes = n.get();
             self.sleep(cx, next_call_allowed);
@@ -190,10 +191,12 @@ impl<B> ThrottlableIo<B> {
             return Poll::Ready(());
         };
 
-        if let Err(until) = limiter.check_n(pending).expect(&format!(
-            "There should always be enough capacity, needed: {}",
-            pending
-        )) {
+        if let Err(until) = limiter.check_n(pending).unwrap_or_else(|_| {
+            panic!(
+                "There should always be enough capacity, needed: {}",
+                pending
+            )
+        }) {
             let next_call_allowed = until.earliest_possible();
             self.as_mut().sleep(cx, next_call_allowed);
             let dur = next_call_allowed.duration_since(Instant::now());
@@ -230,11 +233,11 @@ impl<B: BandwidthCallback> hyper::rt::Read for ThrottlableIo<B> {
             return Poll::Ready(Err(e));
         }
 
-        if let Poll::Pending = self.do_sleep(cx) {
+        if self.do_sleep(cx).is_pending() {
             return Poll::Pending;
         }
 
-        if let Poll::Pending = self.recheck_limiter(cx) {
+        if self.recheck_limiter(cx).is_pending() {
             return Poll::Pending;
         }
 

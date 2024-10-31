@@ -31,7 +31,7 @@ async fn unlimited_upstream_and_bw() {
     controller
         .handle_update(
             &limiter,
-            bandwidth::Update::StreamUpdate {
+            bandwidth::Update::StreamBandwidth {
                 id: id1,
                 bandwidth: 100,
             },
@@ -44,7 +44,7 @@ async fn unlimited_upstream_and_bw() {
     controller
         .handle_update(
             &limiter,
-            bandwidth::Update::StreamUpdate {
+            bandwidth::Update::StreamBandwidth {
                 id: id2,
                 bandwidth: 500,
             },
@@ -56,7 +56,7 @@ async fn unlimited_upstream_and_bw() {
     controller
         .handle_update(
             &limiter,
-            bandwidth::Update::StreamUpdate {
+            bandwidth::Update::StreamBandwidth {
                 id: id2,
                 bandwidth: 50,
             },

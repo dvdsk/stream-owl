@@ -97,7 +97,7 @@ where
         range_watch,
     } = store_writer;
 
-    pre_migrate(&curr_store, &mut target).await?;
+    pre_migrate(curr_store, &mut target).await?;
     debug!("finished pre-migration, acquiring exclusive access to store");
     let mut curr = curr_store.lock().await;
     finish_migration(&mut curr, &mut target).await?;

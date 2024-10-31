@@ -36,7 +36,7 @@ async fn main() {
     let path = PathBuf::from("file1.data");
     streams.push(
         manager
-            .add_with_options(URL1.try_into().unwrap(), |config| config.to_disk(path))
+            .add_with_options(URL1.try_into().unwrap(), |config| config.store_on_fs(path))
             .await,
     );
     streams.push(manager.add(URL2.try_into().unwrap()).await);

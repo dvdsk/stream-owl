@@ -24,10 +24,6 @@ impl Limit {
     pub(crate) fn have_guess(&self) -> bool {
         matches!(self, Limit::Guess(_))
     }
-
-    pub(crate) fn unknown(&self) -> bool {
-        !self.have_guess()
-    }
 }
 
 #[derive(Debug, Clone)]
@@ -126,27 +122,21 @@ impl<'a> Allocations<'a> {
     }
     #[must_use]
     pub fn remove_biggest(&mut self) -> Option<AllocationInfo> {
-        let Some(index) = self
+        let index = self
             .iter()
             .enumerate()
             .max_by_key(|(_, info)| info.allocated)
-            .map(|(idx, _)| idx)
-        else {
-            return None;
-        };
+            .map(|(idx, _)| idx)?;
 
         Some(self.list.swap_remove(index))
     }
     #[must_use]
     pub(crate) fn remove_smallest(&mut self) -> Option<AllocationInfo> {
-        let Some(index) = self
+        let index = self
             .iter()
             .enumerate()
             .min_by_key(|(_, info)| info.allocated)
-            .map(|(idx, _)| idx)
-        else {
-            return None;
-        };
+            .map(|(idx, _)| idx)?;
 
         Some(self.list.swap_remove(index))
     }

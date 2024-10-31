@@ -52,12 +52,10 @@ where
         let task_ends = task.as_mut().map(Res::Task);
         match (get_pause, task_ends).race().await {
             Res::Pause(None) => return Ok(StreamCanceld),
-            Res::Pause(Some(true)) => loop {
-                match pause_rx.recv().await {
-                    Some(true) => unreachable!("handle should send pause only if unpaused"),
-                    Some(false) => break,
-                    None => return Ok(StreamCanceld),
-                }
+            Res::Pause(Some(true)) => match pause_rx.recv().await {
+                Some(true) => unreachable!("handle should send pause only if unpaused"),
+                Some(false) => (),
+                None => return Ok(StreamCanceld),
             },
             Res::Pause(Some(false)) => unreachable!("handle should send unpause only if paused"),
             Res::Task(result) => return result,

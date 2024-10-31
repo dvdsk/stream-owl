@@ -70,7 +70,7 @@ impl Priority {
 
 impl PartialOrd for Priority {
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        (*self as usize).partial_cmp(&(*other as usize))
+        Some(self.cmp(other))
     }
 }
 
@@ -80,8 +80,9 @@ impl Ord for Priority {
     }
 }
 
+#[expect(dead_code, reason = "handles not yet written")]
 pub(crate) enum Update {
-    StreamUpdate {
+    StreamBandwidth {
         id: StreamId,
         bandwidth: usize,
     },
@@ -108,7 +109,7 @@ pub(crate) struct WrappedCallback<B: IdBandwidthCallback> {
 
 impl<B: IdBandwidthCallback> IdBandwidthCallback for WrappedCallback<B> {
     fn perform(&mut self, id: StreamId, bandwidth: usize) {
-        let res = self.tx.try_send(Update::StreamUpdate { id, bandwidth });
+        let res = self.tx.try_send(Update::StreamBandwidth { id, bandwidth });
 
         // Only warn once. The failure is probably caused by an
         // overloaded system or blocking too long. Lets not contribute to that
@@ -146,7 +147,7 @@ impl BandwidthInfo {
             .or(self.prev_sweep)
             .unwrap_or_else(|| {
                 assert!(
-                    self.since_last_sweep.len() > 0,
+                    !self.since_last_sweep.is_empty(),
                     "prev_sweep is Some if this is zero"
                 );
                 self.mean_since_last_sweep()
@@ -200,10 +201,10 @@ impl Controller {
         update: Update,
     ) {
         match update {
-            Update::StreamUpdate { id, bandwidth } => self.bandwidth_update(id, bandwidth),
-            Update::NewPriority { id, priority } => todo!(),
-            Update::NewStreamLimit { id, bandwidth } => todo!(),
-            Update::NewGlobalLimit { bandwidth } => todo!(),
+            Update::StreamBandwidth { id, bandwidth } => self.bandwidth_update(id, bandwidth),
+            Update::NewPriority { .. } => todo!(),
+            Update::NewStreamLimit { .. } => todo!(),
+            Update::NewGlobalLimit { .. } => todo!(),
             Update::Scheduled => {
                 self.remove_allocs_that_should_have_been_dropped(handles)
                     .await;
@@ -390,10 +391,7 @@ impl Controller {
     }
 
     fn n_streams(&self) -> usize {
-        self.allocated_by_prio
-            .iter()
-            .map(|(_, list)| list.len())
-            .sum()
+        self.allocated_by_prio.values().map(|list| list.len()).sum()
     }
 
     fn divide_new_bandwidth(&mut self, mut to_divide: u32) {
@@ -423,7 +421,7 @@ impl Controller {
 
     /// Returned object must be drained back into self before it drops
     #[must_use]
-    fn allocations_at_priority<'a>(&'a mut self, p: Priority) -> Allocations<'a> {
+    fn allocations_at_priority(&mut self, p: Priority) -> Allocations<'_> {
         let list = self
             .allocated_by_prio
             .get(&p)

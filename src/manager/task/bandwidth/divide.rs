@@ -101,7 +101,7 @@ pub(super) fn spread(allocations: Allocations, wished_for: u32) -> u32 {
 /// Takes the minimum from the top allocations until:
 ///  A: The required amount is freed
 ///  B: The required amount is equal to the largest
-fn take_flattening_the_top<'a>(wished_for: u32, mut list: Allocations) -> u32 {
+fn take_flattening_the_top(wished_for: u32, mut list: Allocations) -> u32 {
     list.insert_placeholder(wished_for);
 
     // visualize the list as N bars. Each loop we slice off the top of M bars
@@ -158,7 +158,7 @@ fn take_flattening_the_top<'a>(wished_for: u32, mut list: Allocations) -> u32 {
         .expect("we put it in at the top");
     let freed = placeholder.allocated + left_over;
     list.extend(flat_top.into_iter().filter(|info| !info.is_placeholder()));
-    return freed;
+    freed
 }
 
 struct FlatBottom {
@@ -428,7 +428,7 @@ fn sorted_ratios(stream_info: &HashMap<StreamId, super::BandwidthInfo>) -> Vec<(
                 }),
         )
         .collect();
-    ratios.sort_unstable_by(|(_, a), (_, b)| b.total_cmp(&a));
+    ratios.sort_unstable_by(|(_, a), (_, b)| b.total_cmp(a));
     assert!(ratios.iter().all(|(_, ratio)| *ratio > 0.0));
     ratios
 }
