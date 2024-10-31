@@ -19,16 +19,15 @@ edition = "2021"
 debug = true
 
 [dependencies]
-async-trait = "0.1.77"
 bytes = "1.5.0"
 futures = "0.3.28"
-futures-concurrency = "7.4.3"
+futures-concurrency = "7.6"
 hickory-resolver = "0.24.0"
 http = "1"
 http-body-util = "0.1.0-rc.3"
 hyper = { version = "1.0.0-rc.4", features = ["full"] }
 hyper-util = { version = "0.1.2", features = ["tokio", "http1", "http2", "server"] }
-network-interface = "1.0.3"
+network-interface = "2"
 pin-project-lite = "0.2.13"
 rangemap = "1.4.0"
 serde_urlencoded = "0.7.1"
@@ -39,15 +38,14 @@ tokio-stream = "0.1.14"
 tracing = "0.1.40"
 
 derivative = "2"
-console-subscriber = "0.2.0"
 rand = "0.8"
-governor = "0.6.0"
+governor = "0.7"
 slotmap = "1.0.7"
 
 [dev-dependencies]
 stream-owl-test-support = { path = "stream-owl-test-support" }
 tracing-subscriber = "0.3.18"
-criterion = { version = "0.4", features = ["html_reports"] }
+criterion = { version = "0.5", features = ["html_reports"] }
 
 [[bench]]
 name = "stream_bench"

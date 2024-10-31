@@ -3,7 +3,6 @@ use std::future::Future;
 
 use futures::{pin_mut, FutureExt};
 use futures_concurrency::future::Race;
-use tokio::select;
 use tokio::sync::mpsc;
 
 mod vecdeque;
