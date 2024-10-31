@@ -5,10 +5,10 @@ use crate::StreamId;
 
 use super::{Controller, LimitBandwidthById};
 
-struct Tomato;
-impl LimitBandwidthById for Tomato {
-    async fn limit_bandwidth(&self, _id: StreamId, _limit: crate::BandwidthLimit) {
-        todo!()
+struct HttpClientMock;
+impl LimitBandwidthById for HttpClientMock {
+    async fn limit_bandwidth(&self, id: StreamId, limit: crate::BandwidthLimit) {
+        dbg!(id, limit);
     }
 }
 
@@ -18,7 +18,8 @@ async fn unlimited_upstream_and_bw() {
 
     let id1 = StreamId::new();
     let config = StreamConfig::default();
-    let limiter = Tomato;
+    let limiter = HttpClientMock;
+    dbg!(&config);
     let (_, _guard) = controller.register(id1, config.clone(), &limiter).await;
     let id2 = StreamId::new();
     let (_, _guard) = controller.register(id2, config, &limiter).await;

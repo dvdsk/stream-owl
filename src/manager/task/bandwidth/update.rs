@@ -4,10 +4,11 @@ use std::time::Instant;
 
 use super::allocation::Bandwidth;
 use super::{
-    divide, BandwidthInfo, Change, Controller, Investigation, LimitBandwidthById, Priority,
+    divide, investigate::Change, investigate::Investigation, BandwidthInfo, Controller,
+    LimitBandwidthById, Priority,
 };
-use crate::manager::task::bandwidth::allocation::{AllocationInfo, Limit};
-use crate::manager::task::bandwidth::NextInvestigation;
+use crate::manager::task::bandwidth::allocation::Limit;
+use crate::manager::task::bandwidth::investigate::NextInvestigation;
 use crate::StreamId;
 
 impl Controller {
@@ -39,8 +40,7 @@ impl Controller {
                 newest_update: Instant::now(),
                 since_last_sweep: Vec::new(),
                 prev_normal_sweep: None,
-                // is updated at the start of the sweep
-                this_sweep: 0,
+                prev_sweep: None,
             });
     }
 
@@ -55,19 +55,19 @@ impl Controller {
             return;
         }
 
-        let bw_tomato: HashMap<_, _> = self
+        let bw_now: HashMap<_, _> = self
             .bandwidth_by_id
             .iter_mut()
             .map(|(id, info)| {
                 (
-                    id,
+                    *id,
                     info.since_last_sweep.drain(..).sum::<Bandwidth>()
                         / info.since_last_sweep.len().max(1) as Bandwidth,
                 )
             })
             .collect();
         let prev_bw = self.previous_sweeps_bw.front().copied();
-        let curr_bw: Bandwidth = bw_tomato.values().sum();
+        let curr_bw: Bandwidth = bw_now.values().sum();
 
         match dbg!(&mut self.investigation) {
             I::Spoiled => return,
@@ -77,10 +77,12 @@ impl Controller {
                     .get(stream)
                     .zip(self.allocations.get_mut(stream))
                 {
+                    let this_sweep = *bw_now.get(stream).expect("guarded by early return");
+
                     if bw.newest_update > self.last_sweep {
                         if let Some(prev_normal_sweep) = bw.prev_normal_sweep {
-                            if prev_normal_sweep > bw.this_sweep {
-                                allocation.upstream_limit = Limit::Guess(bw.this_sweep);
+                            if prev_normal_sweep > this_sweep {
+                                allocation.upstream_limit = Limit::Guess(this_sweep);
                             } else {
                                 allocation.upstream_limit = Limit::Unknown;
                             }
@@ -115,10 +117,15 @@ impl Controller {
                         self.investigate_stream_limit();
                     }
                 }
+            }
+        }
 
-                for bw in self.bandwidth_by_id.values_mut() {
-                    bw.prev_normal_sweep = Some(bw.this_sweep);
-                }
+        for (id, bw) in self.bandwidth_by_id.iter_mut() {
+            let mean = *bw_now.get(id).expect("guarded by early return");
+            if let I::Neutral = self.investigation {
+                bw.prev_normal_sweep = Some(mean);
+            } else {
+                bw.prev_sweep = Some(mean);
             }
         }
 

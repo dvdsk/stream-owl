@@ -12,6 +12,7 @@ use tokio::time;
 
 mod allocation;
 mod divide;
+mod investigate;
 #[cfg(test)]
 mod test;
 mod update;
@@ -130,87 +131,26 @@ struct BandwidthInfo {
     pub since_last_sweep: Vec<Bandwidth>,
     pub steadyness: f32,
     pub prev_normal_sweep: Option<Bandwidth>,
-    pub this_sweep: Bandwidth,
+    pub prev_sweep: Option<Bandwidth>,
     pub newest_update: Instant,
 }
 
-#[derive(Debug)]
-pub enum Change {
-    Added(Bandwidth),
-    Removed(Bandwidth),
-}
-
-#[derive(Debug)]
-pub enum Investigation {
-    StreamLimit {
-        changes: HashMap<StreamId, Change>,
-        stream: StreamId,
-    },
-    TotalLimit {
-        changes: HashMap<StreamId, Change>,
-    },
-    /// nothing happened, any bandwidth decrease it the result of:
-    ///  - Total bandwidth decreasing
-    ///  - A stream getting a tighter upstream limit
-    Neutral,
-    /// a stream was removed or added
-    /// so we cannot use this as base measurement
-    Spoiled,
-}
-
-impl Investigation {
-    fn apply(&self, allocations: &mut HashMap<StreamId, AllocationInfo>) {
-        use Investigation::{StreamLimit, TotalLimit};
-        let (StreamLimit { changes, .. } | TotalLimit { changes }) = self else {
-            return;
-        };
-
-        for (id, change) in changes {
-            let allocation = allocations
-                .get_mut(id)
-                .expect("allocations should not have changed since changes where made");
-            match change {
-                Change::Added(bandwidth) => allocation.allocated += bandwidth,
-                Change::Removed(bandwidth) => allocation.allocated -= bandwidth,
-            }
-        }
+impl BandwidthInfo {
+    fn mean_since_last_sweep(&self) -> Bandwidth {
+        self.since_last_sweep.iter().sum::<Bandwidth>() / self.since_last_sweep.len() as Bandwidth
     }
 
-    fn undo(&mut self, allocations: &mut HashMap<StreamId, AllocationInfo>) {
-        match self {
-            Self::Neutral | Self::Spoiled => (),
-            Self::StreamLimit { changes, .. } | Self::TotalLimit { changes } => {
-                for (id, change) in changes {
-                    let Some(allocation) = allocations.get_mut(id) else {
-                        continue;
-                    };
-                    match change {
-                        Change::Added(bw) => allocation.allocated -= *bw,
-                        Change::Removed(bw) => allocation.allocated += *bw,
-                    }
-                }
-                *self = Self::Neutral;
-            }
-        }
-    }
-
-    fn spoil(&mut self, allocations: &mut HashMap<StreamId, AllocationInfo>) {
-        self.undo(allocations);
-        *self = Self::Spoiled;
-    }
-}
-
-#[derive(Debug)]
-enum NextInvestigation {
-    TotalBandwidth,
-    StreamBandwidth,
-}
-impl NextInvestigation {
-    fn next(&self) -> NextInvestigation {
-        match self {
-            Self::TotalBandwidth => Self::StreamBandwidth,
-            Self::StreamBandwidth => Self::TotalBandwidth,
-        }
+    /// Get an estimate of this streams bandwidth
+    fn get(&self) -> Bandwidth {
+        self.prev_normal_sweep
+            .or(self.prev_sweep)
+            .unwrap_or_else(|| {
+                assert!(
+                    self.since_last_sweep.len() > 0,
+                    "prev_sweep is Some if this is zero"
+                );
+                self.mean_since_last_sweep()
+            })
     }
 }
 
@@ -224,9 +164,9 @@ pub(crate) struct Controller {
     /// removed since the last sweep
     last_sweep: Instant,
     next_sweep: Instant,
-    next_investigation: NextInvestigation,
+    next_investigation: investigate::NextInvestigation,
 
-    investigation: Investigation,
+    investigation: investigate::Investigation,
     /// last stream checked for more bandwidth in list `bandwidth_by_id`
     last_index_checked: usize,
     /// list of StreamId in some order
@@ -303,9 +243,9 @@ impl Controller {
                 bandwidth_by_id: HashMap::new(),
                 allocated_by_prio: BTreeMap::new(),
                 allocations: HashMap::new(),
-                investigation: Investigation::Neutral,
+                investigation: investigate::Investigation::Neutral,
                 last_sweep: Instant::now(),
-                next_investigation: NextInvestigation::TotalBandwidth,
+                next_investigation: investigate::NextInvestigation::TotalBandwidth,
             },
             bandwidth,
         )
@@ -329,26 +269,43 @@ impl Controller {
         let Some(info) = info else { return };
 
         self.investigation.spoil(&mut self.allocations);
-        self.divide_new_bandwidth(info.allocated);
-        self.apply_new_limits(handles).await;
+
+        if self.allocations.len() == 1 {
+            // remove all limits
+            self.divide_new_bandwidth(Bandwidth::MAX);
+            self.apply_new_limits(handles).await;
+        } else {
+            self.divide_new_bandwidth(info.allocated);
+            self.apply_new_limits(handles).await;
+        }
     }
 
     #[must_use]
     pub(crate) async fn register(
         &mut self,
         id: StreamId,
-        mut config: StreamConfig,
+        config: StreamConfig,
         handles: &impl LimitBandwidthById,
     ) -> (StreamConfig, allocation::AllocationGuard) {
-        use BandwidthAllowed as B;
-        let init_limit = match config.bandwidth {
-            B::UnLimited => Bandwidth::MAX, // will be made fair in next
-            B::Limited(limit) => limit.0.get(),
+        let allocated_bw = if self.allocations.is_empty() {
+            Bandwidth::MAX // unlimited bandwidth
+        } else if self.allocations.len() == 1 {
+            let (id, info) = self
+                .allocations
+                .iter_mut()
+                .next()
+                .expect("in sync with bandwidth_by_id");
+            let total_bw = self
+                .bandwidth_by_id
+                .get(id)
+                .map(BandwidthInfo::get)
+                .unwrap_or(10_000); // could not yet have had any bandwidth report
+            info.allocated = total_bw / 2;
+            total_bw / 2
+        } else {
+            let init_limit = config.bandwidth.unwrap();
+            self.remove_bw_at_and_below(config.priority, init_limit)
         };
-        let allocated_bw = self.remove_bw_at_and_below(config.priority, init_limit);
-        config.bandwidth = BandwidthAllowed::Limited(BandwidthLimit(
-            NonZeroU32::new(allocated_bw).expect("allocated_bandwidth should never be zero"),
-        ));
 
         let guard = allocation::AllocationGuard {
             tx: self.tx.clone(),
@@ -363,6 +320,7 @@ impl Controller {
             target: config.bandwidth.clone(),
             stream_still_exists: guard.stream_still_exists.clone(),
         };
+        dbg!(id, &info);
 
         self.orderd_streamids.push(id);
         self.allocations.insert(id, info);
@@ -377,20 +335,23 @@ impl Controller {
         (config, guard)
     }
 
-    async fn apply_new_limits(&self, handles: &impl LimitBandwidthById) {
+    async fn apply_new_limits(&mut self, handles: &impl LimitBandwidthById) {
         for (
             id,
             AllocationInfo {
-                allocated: new_bw, ..
+                allocated: new_bw,
+                curr_io_limit,
+                ..
             },
         ) in self
             .allocations
-            .iter()
+            .iter_mut()
             .filter(|(_, info)| info.allocated != info.curr_io_limit)
         {
             // TODO handle unlimited download speed
             let limit = BandwidthLimit(NonZeroU32::new(*new_bw).unwrap());
-            handles.limit_bandwidth(*id, limit).await
+            handles.limit_bandwidth(*id, limit).await;
+            *curr_io_limit = *new_bw;
         }
     }
 

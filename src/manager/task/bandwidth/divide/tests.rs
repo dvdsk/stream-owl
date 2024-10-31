@@ -213,8 +213,8 @@ mod spread_perbutation {
             steadyness: entry.steadyness,
             since_last_sweep: Vec::new(),
             prev_normal_sweep: None,
-            this_sweep: 100,
             newest_update: Instant::now(),
+            prev_sweep: None,
         }
     }
 
