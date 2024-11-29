@@ -3,13 +3,12 @@ use std::sync::atomic::Ordering;
 use std::time::Instant;
 
 use super::allocation::Bandwidth;
-use super::{
-    divide, investigate::Change, investigate::Investigation, BandwidthInfo, Controller,
-    LimitBandwidthById, Priority,
-};
+use super::{investigate::Investigation, BandwidthInfo, Controller, LimitBandwidthById, Priority};
 use crate::manager::task::bandwidth::allocation::Limit;
 use crate::manager::task::bandwidth::investigate::NextInvestigation;
 use crate::StreamId;
+
+mod investigate;
 
 impl Controller {
     pub(super) fn bandwidth_update(&mut self, stream: StreamId, new: usize) {
@@ -38,197 +37,153 @@ impl Controller {
                 // bandwidth
                 steadyness: 0.5,
                 newest_update: Instant::now(),
-                since_last_sweep: Vec::new(),
+                since_last_sweep: vec![new as Bandwidth],
                 prev_normal_sweep: None,
                 prev_sweep: None,
             });
     }
 
     pub(super) async fn sweep(&mut self, handles: &impl LimitBandwidthById) {
-        dbg!("----sweep----");
-        use Investigation as I;
-        if self
-            .bandwidth_by_id
-            .iter()
-            .any(|(_, bw)| bw.newest_update < self.last_sweep)
-        {
+        if self.no_update_since_last_sweep() {
             return;
         }
 
-        let bw_now: HashMap<_, _> = self
-            .bandwidth_by_id
+        let mean_bandwidths = self.mean_bandwidths();
+        let prev_mean_bandwidth = self.previous_sweeps_bw.front().copied();
+        let curr_mean_bandwidth: Bandwidth = mean_bandwidths.values().sum();
+
+        let next_investigation = match self.investigation {
+            Investigation::Spoiled => NextInvestigation::Neutral,
+            Investigation::StreamLimit {
+                investigated_stream,
+                ..
+            } => {
+                self.record_stream_limit(investigated_stream, &mean_bandwidths);
+                NextInvestigation::Neutral
+            }
+            Investigation::TotalLimit { .. } => {
+                self.record_total_limit(curr_mean_bandwidth, prev_mean_bandwidth)
+            }
+            Investigation::Neutral => {
+                self.record_then_adjust_allocations(curr_mean_bandwidth);
+                self.next_investigation.next()
+            }
+        };
+
+        self.investigation.undo(&mut self.allocations);
+        self.prep_next_investigation(next_investigation, curr_mean_bandwidth);
+
+        self.prep_bandwidth_info_for_next_sweep(mean_bandwidths);
+        self.apply_new_limits(handles).await;
+    }
+
+    fn no_update_since_last_sweep(&self) -> bool {
+        self.bandwidth_by_id
+            .iter()
+            .any(|(_, bw)| bw.newest_update < self.last_sweep)
+    }
+
+    fn mean_bandwidths(&mut self) -> HashMap<StreamId, Bandwidth> {
+        self.bandwidth_by_id
             .iter_mut()
             .map(|(id, info)| {
                 (
                     *id,
-                    info.since_last_sweep.drain(..).sum::<Bandwidth>()
+                    info.since_last_sweep.iter().sum::<Bandwidth>()
                         / info.since_last_sweep.len().max(1) as Bandwidth,
                 )
             })
-            .collect();
-        let prev_bw = self.previous_sweeps_bw.front().copied();
-        let curr_bw: Bandwidth = bw_now.values().sum();
+            .collect()
+    }
 
-        match dbg!(&mut self.investigation) {
-            I::Spoiled => return,
-            I::StreamLimit { ref stream, .. } => {
-                if let Some((bw, allocation)) = self
-                    .bandwidth_by_id
-                    .get(stream)
-                    .zip(self.allocations.get_mut(stream))
-                {
-                    let this_sweep = *bw_now.get(stream).expect("guarded by early return");
-
-                    if bw.newest_update > self.last_sweep {
-                        if let Some(prev_normal_sweep) = bw.prev_normal_sweep {
-                            if prev_normal_sweep > this_sweep {
-                                allocation.upstream_limit = Limit::Guess(this_sweep);
-                            } else {
-                                allocation.upstream_limit = Limit::Unknown;
-                            }
-                        }
-                    }
-                }
-            }
-            I::TotalLimit { .. } => {
-                // only note increases, a decrease could be because of
-                // a stream limit
-                if Some(curr_bw) > prev_bw {
-                    self.previous_sweeps_bw.push_front(curr_bw);
-                    self.previous_sweeps_bw.truncate(5);
-                }
-            }
-            I::Neutral => {
-                self.previous_sweeps_bw.push_front(curr_bw);
-                self.previous_sweeps_bw.truncate(5);
-
-                if Some(curr_bw) < prev_bw {
-                    let lost = prev_bw.expect("if guards this") - curr_bw;
-                    self.remove_bw_at_and_below(Priority::highest(), lost);
-                }
-
-                match dbg!(self.next_investigation.next()) {
-                    NextInvestigation::TotalBandwidth => {
-                        if self.bandwidth_lim.got_space(curr_bw) {
-                            self.investigate_total_limit();
-                        }
-                    }
-                    NextInvestigation::StreamBandwidth => {
-                        self.investigate_stream_limit();
-                    }
-                }
-            }
-        }
-
-        for (id, bw) in self.bandwidth_by_id.iter_mut() {
-            let mean = *bw_now.get(id).expect("guarded by early return");
-            if let I::Neutral = self.investigation {
-                bw.prev_normal_sweep = Some(mean);
+    fn prep_bandwidth_info_for_next_sweep(&mut self, mean_bandwidths: HashMap<StreamId, u32>) {
+        for (id, info) in self.bandwidth_by_id.iter_mut() {
+            let mean = *mean_bandwidths.get(id).expect("guarded by early return");
+            info.since_last_sweep.clear();
+            if let Investigation::Neutral = self.investigation {
+                info.prev_normal_sweep = Some(mean);
             } else {
-                bw.prev_sweep = Some(mean);
+                info.prev_sweep = Some(mean);
             }
         }
-
-        self.investigation.undo(&mut self.allocations);
-        self.apply_new_limits(handles).await;
     }
 
-    /// grow faster if the previous few increase was achieved
-    /// if we just started double the increase
-    fn optimal_total_bw_perbutation(&self) -> Bandwidth {
-        let after = self
-            .previous_sweeps_bw
-            .get(1)
-            .copied()
-            .expect("just set in fn sweep");
-        let Some(before) = self.previous_sweeps_bw.get(2).copied() else {
-            return after;
-        };
-
-        let target_increase = self
-            .previous_total_bw_perbutation
-            .expect("if before is Some then this is the second time this fn is called");
-
-        if before > after {
-            return after / 10;
-        }
-
-        let increase = 0.9 * (after - before) as f32;
-        if increase as u32 >= target_increase {
-            target_increase * 2
-        } else {
-            target_increase / 2
-        }
-    }
-
-    /// make a small increase to the bandwidth division to find out
-    /// if the total available bandwidth has increased
-    pub(super) fn investigate_total_limit(&mut self) {
-        let perbutation = self.optimal_total_bw_perbutation();
-        self.previous_total_bw_perbutation = Some(perbutation);
-
-        // want each stream to get some bit of extra bandwidth, how much
-        // is determined by its growability and steadyness. If its more
-        // steady it gets more allocated
-        let (changes, _left_over) = divide::spread_prioritize_steadiest(
-            perbutation,
-            &self.bandwidth_by_id,
-            &self.allocations,
-        );
-
-        let changes = changes
-            .into_iter()
-            .map(|(id, amount)| (id, Change::Added(amount)))
-            .collect();
-        self.investigation = Investigation::TotalLimit { changes };
-        self.investigation.apply(&mut self.allocations);
-    }
-
-    /// make a small perbutation to the bandwidth division to find
-    /// if a stream has more upstream bandwidth
-    pub(super) fn investigate_stream_limit(&mut self) {
-        assert!(!self.allocations.is_empty());
-
-        struct ToCheck {
-            id: StreamId,
-            allocated: Bandwidth,
-        }
-
-        // try every stream while finding the next stream to check
-        let mut to_check: Option<ToCheck> = None;
-        for _ in 0..self.orderd_streamids.len() {
-            let index = (self.last_index_checked + 1) % self.allocations.len();
-            self.last_index_checked = index;
-
-            let stream_id = self.orderd_streamids[index];
-            if let Some(info) = self.allocations.get(&stream_id) {
-                to_check = Some(ToCheck {
-                    id: stream_id,
-                    allocated: info.allocated,
-                });
-                break;
+    fn prep_next_investigation(
+        &mut self,
+        next_investigation: NextInvestigation,
+        curr_mean_bandwidth: u32,
+    ) {
+        match next_investigation {
+            NextInvestigation::TotalBandwidth => {
+                if self.bandwidth_lim.got_space(curr_mean_bandwidth) {
+                    self.investigate_total_limit(curr_mean_bandwidth);
+                }
             }
+            NextInvestigation::StreamBandwidth => {
+                self.investigate_stream_limit();
+            }
+            NextInvestigation::Neutral => (),
         }
+    }
 
-        let Some(to_check) = to_check else {
+    fn record_stream_limit(
+        &mut self,
+        investigated_stream: StreamId,
+        mean_bandwidth: &HashMap<StreamId, Bandwidth>,
+    ) {
+        let Some((bandwidth, allocation)) = self
+            .bandwidth_by_id
+            .get(&investigated_stream)
+            .zip(self.allocations.get_mut(&investigated_stream))
+        else {
             return;
         };
 
-        let five_percent_of_allocation = (to_check.allocated as f32 * 0.05) as Bandwidth;
-        let perbutation = five_percent_of_allocation;
-        let list = self.allocations.values();
+        if bandwidth.newest_update < self.last_sweep {
+            return;
+        }
 
-        let mut changes: HashMap<_, _> = divide::take(list, perbutation)
-            .into_iter()
-            .map(|(id, amount)| (id, Change::Removed(amount)))
-            .collect();
-        changes.insert(to_check.id, Change::Added(perbutation));
-        self.investigation = Investigation::StreamLimit {
-            changes,
-            stream: to_check.id,
+        let Some(prev_sweep) = bandwidth.prev_normal_sweep else {
+            return;
         };
-        dbg!(&self.investigation);
-        self.investigation.apply(&mut self.allocations);
+
+        let this_sweep = *mean_bandwidth
+            .get(&investigated_stream)
+            .expect("guarded by early return");
+
+        if prev_sweep > this_sweep {
+            allocation.upstream_limit = Limit::Guess(this_sweep);
+        } else {
+            allocation.upstream_limit = Limit::Unknown;
+        }
+    }
+
+    fn record_total_limit(
+        &mut self,
+        curr_mean_bandwidth: u32,
+        prev_mean_bandwidth: Option<u32>,
+    ) -> NextInvestigation {
+        // Total stream limit investigation increases many streams bandwidth
+        // limit. This can lead to a decrease of total bandwidth if one of the
+        // streams has an upstream limit which we are not aware off.
+        if Some(curr_mean_bandwidth) > prev_mean_bandwidth {
+            self.previous_sweeps_bw.push_front(curr_mean_bandwidth);
+            self.previous_sweeps_bw.truncate(5);
+            NextInvestigation::TotalBandwidth
+        } else {
+            NextInvestigation::Neutral
+        }
+    }
+
+    fn record_then_adjust_allocations(&mut self, curr_mean_bandwidth: Bandwidth) {
+        self.previous_sweeps_bw.push_front(curr_mean_bandwidth);
+        self.previous_sweeps_bw.truncate(5);
+
+        if curr_mean_bandwidth < self.total_allocated() {
+            // minimum bandwidth is 1 byte per second
+            let overcommited = self.total_allocated().saturating_sub(curr_mean_bandwidth);
+            self.free_up_till_and_including(Priority::highest(), overcommited);
+        }
     }
 
     /// In case of overload the drop `super::Update` message be missed, this is

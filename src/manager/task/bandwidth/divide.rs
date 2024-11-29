@@ -19,8 +19,6 @@ pub(super) fn take<'a>(
     allocations: impl Iterator<Item = &'a AllocationInfo> + Clone,
     needed: u32,
 ) -> HashMap<StreamId, Bandwidth> {
-    let allocs: Vec<_> = allocations.clone().collect();
-    dbg!(allocs, needed);
     // visualize the allocations as a hillside. We need an amount of dirt.
     // This algorithm digs it up starting at the hills top. Eventually we
     // will have the right amount of dirt and be left with a flat topped
@@ -42,7 +40,7 @@ pub(super) fn take<'a>(
     // mountain is a cube. If its not we get too much dirt and we increase
     // the height.
     let hill_width = allocations.clone().count() as u32;
-    let mut proposed_height = planned_hill_size / hill_width;
+    let mut proposed_height = planned_hill_size / hill_width.max(2);
 
     // Could take a few loops to get right, lets not take too many, we may
     // be on a deadline
@@ -62,7 +60,7 @@ pub(super) fn take<'a>(
         // Ignore the part of the hill under the previously proposed height
         // and make a new proposal for a height above which to dig all the
         // dirt away
-        let next = (planned_hill_size - dirt_under_height) / hill_width_above_height;
+        let next = (planned_hill_size - dirt_under_height) / hill_width_above_height.max(2);
         if next == proposed_height {
             break;
         } else {
@@ -307,11 +305,15 @@ fn divide_within_flat(flat: &mut FlatBottom, spread_out: &mut u32, to_divide: u3
 ///
 /// Returns the changes that would spread out the perbutation and what would
 /// be left over.
+///
+/// # Panics
+/// if to_spread is equal to zero
 pub(crate) fn spread_prioritize_steadiest(
     mut to_spread: Bandwidth,
     stream_info: &HashMap<StreamId, super::BandwidthInfo>,
     allocations: &HashMap<StreamId, AllocationInfo>,
 ) -> (HashMap<StreamId, Bandwidth>, Bandwidth) {
+
     let mut final_perbutations = HashMap::new();
     let mut perbutation_per_stream = HashMap::new();
     let mut ratios = sorted_ratios(stream_info);
@@ -408,10 +410,14 @@ fn biggest_fractional_increase(
 }
 
 fn sorted_ratios(stream_info: &HashMap<StreamId, super::BandwidthInfo>) -> Vec<(StreamId, f32)> {
+    if stream_info.is_empty() {
+        return Vec::new();
+    }
+
     let best = stream_info
         .iter()
         .max_by(|a, b| a.1.steadyness.total_cmp(&b.1.steadyness))
-        .expect("len > 0");
+        .expect("early return if empty");
     let spread_factor = 6.0;
     // lower is more spread out
 

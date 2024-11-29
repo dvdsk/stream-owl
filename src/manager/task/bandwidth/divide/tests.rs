@@ -58,6 +58,11 @@ mod take {
     fn one_element() {
         do_test([10], 5, [5])
     }
+
+    #[test]
+    fn two_large() {
+        do_test([5000, 5000], 250, [4875, 4875])
+    }
 }
 
 mod flatten_top {

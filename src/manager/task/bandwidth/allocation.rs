@@ -26,7 +26,7 @@ impl Limit {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub(crate) struct AllocationInfo {
     pub(crate) id: StreamId,
     pub(crate) target: BandwidthAllowed,
@@ -72,6 +72,7 @@ impl AllocationInfo {
 
 /// When dropped this moves all the allocation info back into the
 /// allocation HashMap which this borrows
+#[derive(Debug)]
 pub struct Allocations<'a> {
     list: Vec<AllocationInfo>,
     /// when going out of scope drain back

@@ -14,7 +14,7 @@ pub enum Change {
 pub enum Investigation {
     StreamLimit {
         changes: HashMap<StreamId, Change>,
-        stream: StreamId,
+        investigated_stream: StreamId,
     },
     TotalLimit {
         changes: HashMap<StreamId, Change>,
@@ -29,6 +29,15 @@ pub enum Investigation {
 }
 
 impl Investigation {
+    pub(crate) fn variant(&self) -> &'static str {
+        match self {
+            Investigation::StreamLimit { .. } => "StreamLimit",
+            Investigation::TotalLimit { .. } => "TotalLimit",
+            Investigation::Neutral => "Neutral",
+            Investigation::Spoiled => "Spoiled",
+        }
+    }
+
     pub(crate) fn apply(&self, allocations: &mut HashMap<StreamId, AllocationInfo>) {
         use Investigation::{StreamLimit, TotalLimit};
         let (StreamLimit { changes, .. } | TotalLimit { changes }) = self else {
@@ -74,6 +83,7 @@ impl Investigation {
 pub(crate) enum NextInvestigation {
     TotalBandwidth,
     StreamBandwidth,
+    Neutral,
 }
 
 impl NextInvestigation {
@@ -81,7 +91,7 @@ impl NextInvestigation {
         match self {
             Self::TotalBandwidth => Self::StreamBandwidth,
             Self::StreamBandwidth => Self::TotalBandwidth,
+            Self::Neutral => unreachable!(),
         }
     }
 }
-
